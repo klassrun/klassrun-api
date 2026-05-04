@@ -1,0 +1,312 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ENUMS
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum Role {
+  SUPER_ADMIN
+  SCHOOL_ADMIN
+  TEACHER
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  EXPIRED
+}
+
+enum ContentType {
+  LESSON_NOTE
+  EXAM_QUESTION
+  SCHEME_OF_WORK
+}
+
+enum SessionTerm {
+  FIRST
+  SECOND
+  THIRD
+}
+
+// NEW — controls whether a school's portal is reachable
+enum SchoolStatus {
+  PROVISIONING // Domain being set up on Vercel
+  ACTIVE // Normal operating state
+  SUSPENDED // Manually paused by super admin
+  EXPIRED // Subscription lapsed; redirected to billing
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  CORE TABLES
+// ─────────────────────────────────────────────────────────────────────────────
+
+model School {
+  id       String  @id @default(uuid())
+  name     String
+  address  String?
+  state    String?
+  logoUrl  String?
+  rcNumber String?
+
+  // ── NEW: multi-tenancy fields ──
+  slug         String       @unique // greenfield-academy → greenfield-academy.klassrun.com
+  customDomain String?      @unique // future white-label tier
+  status       SchoolStatus @default(PROVISIONING)
+  slugLockedAt DateTime? // set after 30 days of activity
+  // ───────────────────────────────
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  users        User[]
+  classes      Class[]
+  subjects     Subject[]
+  lessonNotes  LessonNote[]
+  assessments  Assessment[]
+  questionBank QuestionBankEntry[]
+  subscription Subscription?
+  sessions     AcademicSession[]
+
+  @@index([slug])
+  @@index([status])
+  @@map("schools")
+}
+
+model User {
+  id             String   @id @default(uuid())
+  email          String   @unique
+  password       String
+  firstName      String
+  lastName       String
+  role           Role     @default(TEACHER)
+  isActive       Boolean  @default(true)
+  inviteToken    String?  @unique
+  inviteAccepted Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Relations
+  schoolId    String? // CHANGED: nullable to support SUPER_ADMIN (platform-wide users)
+  school      School?      @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  lessonNotes LessonNote[]
+  assessments Assessment[]
+
+  @@index([schoolId]) // NEW: faster tenant-scoped queries
+  @@map("users")
+}
+
+model AcademicSession {
+  id          String      @id @default(uuid())
+  name        String // e.g. "2025/2026"
+  currentTerm SessionTerm @default(FIRST)
+  isCurrent   Boolean     @default(false)
+  createdAt   DateTime    @default(now())
+
+  // Relations
+  schoolId    String
+  school      School       @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  lessonNotes LessonNote[]
+  assessments Assessment[]
+
+  @@unique([schoolId, name])
+  @@index([schoolId]) // NEW
+  @@map("academic_sessions")
+}
+
+model Class {
+  id        String   @id @default(uuid())
+  name      String // e.g. "JSS 1", "SS 2"
+  level     String? // "junior" or "senior"
+  createdAt DateTime @default(now())
+
+  // Relations
+  schoolId    String
+  school      School       @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  subjects    Subject[]
+  lessonNotes LessonNote[]
+  assessments Assessment[]
+
+  @@unique([schoolId, name])
+  @@index([schoolId]) // NEW
+  @@map("classes")
+}
+
+model Subject {
+  id        String   @id @default(uuid())
+  name      String // e.g. "Mathematics", "English Language"
+  createdAt DateTime @default(now())
+
+  // Relations
+  schoolId     String
+  school       School              @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  classId      String
+  class        Class               @relation(fields: [classId], references: [id], onDelete: Cascade)
+  teacherId    String?
+  lessonNotes  LessonNote[]
+  assessments  Assessment[]
+  questionBank QuestionBankEntry[]
+
+  @@unique([schoolId, classId, name])
+  @@index([schoolId]) // NEW
+  @@map("subjects")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  CONTENT TABLES
+// ─────────────────────────────────────────────────────────────────────────────
+
+model LessonNote {
+  id           String      @id @default(uuid())
+  topic        String
+  week         Int?
+  content      Json
+  contentType  ContentType @default(LESSON_NOTE)
+  sessionStamp String // e.g. "2025/2026 · Term 2"
+  pdfUrl       String?
+  isEdited     Boolean     @default(false)
+  editHistory  Json?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  // Relations
+  schoolId  String
+  school    School          @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  teacherId String
+  teacher   User            @relation(fields: [teacherId], references: [id])
+  classId   String
+  class     Class           @relation(fields: [classId], references: [id])
+  subjectId String
+  subject   Subject         @relation(fields: [subjectId], references: [id])
+  sessionId String
+  session   AcademicSession @relation(fields: [sessionId], references: [id])
+
+  @@index([schoolId]) // NEW
+  @@index([schoolId, subjectId, classId]) // NEW: dashboard queries
+  @@map("lesson_notes")
+}
+
+model Assessment {
+  id           String      @id @default(uuid())
+  title        String
+  questions    Json
+  totalMarks   Int?
+  duration     Int?
+  contentType  ContentType @default(EXAM_QUESTION)
+  sessionStamp String
+  pdfUrl       String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  // Relations
+  schoolId  String
+  school    School          @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  teacherId String
+  teacher   User            @relation(fields: [teacherId], references: [id])
+  classId   String
+  class     Class           @relation(fields: [classId], references: [id])
+  subjectId String
+  subject   Subject         @relation(fields: [subjectId], references: [id])
+  sessionId String
+  session   AcademicSession @relation(fields: [sessionId], references: [id])
+
+  // NEW — used questions for this assessment, used by deduplication logic
+  usedQuestionIds Json? // Array of QuestionBankEntry ids
+
+  @@index([schoolId]) // NEW
+  @@map("assessments")
+}
+
+model QuestionBankEntry {
+  id           String  @id @default(uuid())
+  question     String
+  options      Json?
+  answer       String?
+  questionType String // "objective", "theory", "practical"
+  difficulty   String?
+  topic        String
+  waecAligned  Boolean @default(false)
+
+  // ── NEW: deduplication & retention hooks ──
+  fingerprint String // normalized hash of question content
+  timesUsed   Int       @default(0) // increments when used in an Assessment
+  lastUsedAt  DateTime?
+  // ──────────────────────────────────────────
+
+  createdAt DateTime @default(now())
+
+  // Relations
+  schoolId  String
+  school    School  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  subjectId String
+  subject   Subject @relation(fields: [subjectId], references: [id])
+
+  @@unique([schoolId, fingerprint]) // NEW: same question can't exist twice for one school
+  @@index([schoolId]) // NEW
+  @@index([schoolId, subjectId, topic]) // NEW: filtering question bank
+  @@map("question_bank")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  BILLING
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Subscription {
+  id             String             @id @default(uuid())
+  plan           String // "starter", "standard", "premium"
+  status         SubscriptionStatus @default(TRIAL)
+  startDate      DateTime           @default(now())
+  endDate        DateTime
+  trialEndsAt    DateTime? // NEW: powers the 14-day trial
+  paystackSubId  String?
+  paystackCustId String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  // Relations
+  schoolId String @unique
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@map("subscriptions")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  CURRICULUM (shared, not per-school)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model CurriculumTopic {
+  id         String      @id @default(uuid())
+  subject    String
+  className  String
+  term       SessionTerm
+  week       Int
+  topic      String
+  subtopics  Json?
+  objectives Json?
+  source     String      @default("NERDC")
+
+  @@unique([subject, className, term, week])
+  @@map("curriculum_topics")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  NEW — RESERVED SLUGS
+//  Blocks system-critical names from being claimed as school subdomains.
+//  Seeded via prisma/seed.js — never edit at runtime.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ReservedSlug {
+  slug      String   @id
+  reason    String?
+  createdAt DateTime @default(now())
+
+  @@map("reserved_slugs")
+}
