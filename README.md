@@ -2,83 +2,65 @@
 
 > Backend for **Klassrun** — the AI-powered school operating system for Nigerian schools.
 
-[![Node](https://img.shields.io/badge/node-%3E%3D20.0.0-3DB54A)](https://nodejs.org/)
-[![Prisma](https://img.shields.io/badge/Prisma-7.7-1A2332)](https://www.prisma.io/)
+[![Node](https://img.shields.io/badge/node-%3E%3D20-3DB54A)](https://nodejs.org/)
+[![Prisma](https://img.shields.io/badge/Prisma-7-1A2332)](https://www.prisma.io/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-336791)](https://www.postgresql.org/)
 [![License](https://img.shields.io/badge/license-UNLICENSED-red)](#license)
 
-This is the backend API powering the Klassrun platform — multi-tenant school portals, AI-generated lesson notes and exam questions, NERDC/WAEC/NECO curriculum alignment, and Paystack-based subscription billing.
-
-The API serves both:
-
-- **klassrun-app** — multi-tenant school portals at `*.klassrun.com`
-- **Future clients** — mobile apps, third-party integrations
+REST API powering klassrun-app. Handles authentication, school onboarding,
+multi-tenant data isolation, AI generation (coming), Paystack billing
+(coming), and transactional email via Resend.
 
 ---
 
 ## Table of contents
 
-- [Architecture overview](#architecture-overview)
+- [Overview](#overview)
 - [Tech stack](#tech-stack)
 - [Project structure](#project-structure)
 - [Quick start](#quick-start)
 - [Environment variables](#environment-variables)
 - [Database](#database)
-  - [Schema](#schema)
-  - [Migrations](#migrations)
-  - [Seeding](#seeding)
 - [API reference](#api-reference)
-  - [Authentication](#authentication)
-  - [Endpoints](#endpoints)
-- [Multi-tenancy model](#multi-tenancy-model)
-- [Development workflow](#development-workflow)
-- [Documentation](#documentation)
+  - [Auth endpoints](#auth-endpoints)
+  - [Slug endpoints](#slug-endpoints)
+- [Auth & security model](#auth--security-model)
+- [Email](#email)
+- [Audit logging](#audit-logging)
+- [Multi-tenancy](#multi-tenancy)
+- [Testing](#testing)
+- [Deployment](#deployment)
 - [License](#license)
 
 ---
 
-## Architecture overview
+## Overview
 
-Klassrun is split across three independently-deployed repositories:
+Klassrun is a multi-tenant SaaS — every school operates in their own isolated
+data space, identified by a unique `slug`. The API enforces tenant isolation
+at the data layer (every per-school query scoped by `schoolId`), so cross-tenant
+leaks are structurally impossible.
 
-| Repository | Domain | Role |
+The API ships in three pieces:
+
+| Repo | Domain | Role |
 |---|---|---|
-| `klassrun-web` | `klassrun.com` | Marketing site, SEO, lead capture |
-| `klassrun-app` | `app.klassrun.com`, `*.klassrun.com` | Auth, super admin, school portals |
-| **`klassrun-api`** _(this repo)_ | `api.klassrun.com` | Backend, AI, billing, all data |
+| `klassrun-web` | klassrun.com | Marketing |
+| `klassrun-app` | app.klassrun.com | School portal UI |
+| **`klassrun-api`** _(this)_ | api.klassrun.com | Backend, AI, billing, email |
 
-The three repos communicate via REST with JWT bearer tokens. JWTs carry `userId`, `role`, and `schoolId` — the `schoolId` claim is what enforces tenant isolation.
-
-For full architecture diagrams, see [`docs/architecture.md`](docs/architecture.md).
+All three communicate via REST + JWT bearer tokens.
 
 ---
 
 ## Tech stack
 
-**Runtime & framework**
-
-- Node.js 20+
-- Express 5
-- TypeScript-flavoured config (Prisma 7 uses `prisma.config.ts`)
-
-**Data & ORM**
-
-- PostgreSQL 15+
-- Prisma 7 ORM
-- `@prisma/adapter-pg` (Prisma 7's required PostgreSQL adapter)
-
-**Auth & security**
-
-- `bcryptjs` for password hashing
-- `jsonwebtoken` for JWT auth
-- `helmet` for HTTP security headers
-- `cors` for cross-origin requests
-
-**External integrations** _(in progress)_
-
-- **Anthropic Claude API** — AI content generation
-- **Paystack** — subscription payments
-- **Vercel API** — per-school subdomain provisioning
+- **Runtime:** Node.js 20+, Express 5
+- **Database:** PostgreSQL 15+, Prisma 7 ORM
+- **Auth:** bcryptjs (cost 12), JWT (jsonwebtoken)
+- **Email:** Resend (with stub mode for dev)
+- **Security:** helmet, CORS allow-list, audit logging
+- **External integrations:** Anthropic Claude (coming), Paystack (coming), Vercel API (later)
 
 ---
 
@@ -87,42 +69,54 @@ For full architecture diagrams, see [`docs/architecture.md`](docs/architecture.m
 ```
 klassrun-api/
 ├── prisma/
-│   ├── schema.prisma          # Database schema — single source of truth
+│   ├── schema.prisma          # Source of truth for the DB schema
 │   ├── migrations/            # Generated migration history
-│   └── seed.js                # Seeds ReservedSlug table
+│   └── seed.js                # Seeds reserved_slugs
 │
 ├── src/
 │   ├── server.js              # Entry point — Express on port 4000
-│   ├── app.js                 # App config — middleware, routes, errors
+│   ├── app.js                 # Middleware, CORS, route registration, errors
 │   │
 │   ├── config/
-│   │   └── db.js              # Prisma client singleton
+│   │   └── db.js              # Prisma client singleton (PrismaPg adapter)
 │   │
 │   ├── middleware/
-│   │   └── auth.js            # JWT auth + role-based authorization
+│   │   └── auth.js            # JWT verification + role-based authz
 │   │
 │   ├── utils/
-│   │   └── jwt.js             # Token generation helpers
+│   │   ├── jwt.js             # Token generation
+│   │   └── slug.js            # Slug generation, validation, availability
+│   │
+│   ├── lib/
+│   │   ├── email.js           # Resend wrapper with stub mode
+│   │   ├── audit.js           # Audit log helper
+│   │   └── email-templates/
+│   │       ├── welcome.js     # Sent on signup
+│   │       └── invite.js      # Sent when admins invite teachers
 │   │
 │   ├── modules/
-│   │   ├── auth/              # Signup, login, invite, accept-invite, /me
+│   │   ├── auth/              # signup, login, invite, accept, me
+│   │   ├── slug/              # check, suggest, generate
 │   │   ├── schools/           # School details, classes, stats
-│   │   ├── notes/             # Lesson note CRUD (AI generation upcoming)
-│   │   ├── assessments/       # Assessment CRUD (AI generation upcoming)
+│   │   ├── notes/             # Lesson notes (AI generation upcoming)
+│   │   ├── assessments/       # Assessments (AI generation upcoming)
 │   │   └── curriculum/        # NERDC curriculum browser
 │   │
-│   └── ai/                    # AI integration (Anthropic Claude)
-│       ├── prompts/           # System prompts (education-only guardrails)
-│       └── validators/        # Output validation
+│   └── ai/                    # Anthropic integration (upcoming)
 │
 ├── docs/
-│   ├── schema.md              # ERD diagram + schema concepts
+│   ├── schema.md              # ERD + multi-tenancy concepts
 │   └── architecture.md        # System architecture diagrams
 │
-├── prisma.config.ts           # Prisma 7 config
-├── .env.example               # Environment template
+├── scripts/
+│   ├── seed-super-admin.js    # ENV-based super admin seeder
+│   ├── test-slug.js           # Slug utility tests
+│   └── test-auth.js           # End-to-end auth flow tests
+│
+├── prisma.config.ts
+├── .env.example
 ├── package.json
-└── README.md                  # This file
+└── README.md
 ```
 
 ---
@@ -131,9 +125,7 @@ klassrun-api/
 
 ### Prerequisites
 
-- **Node.js** 20 or higher (`node -v`)
-- **PostgreSQL** 15 or higher running locally
-- **npm** 10+
+- Node 20+, PostgreSQL 15+, npm 10+
 
 ### 1. Install dependencies
 
@@ -143,334 +135,308 @@ npm install
 
 ### 2. Create the database
 
-Open `psql` or pgAdmin and run:
-
 ```sql
 CREATE DATABASE klassrun_db;
 ```
 
-### 3. Configure environment
+### 3. Configure `.env`
 
 ```bash
-cp .env.example .env       # macOS/Linux
-copy .env.example .env     # Windows
+cp .env.example .env
 ```
 
-Edit `.env` — set your PostgreSQL password and generate a JWT secret:
+Fill in `DATABASE_URL` and generate a strong `JWT_SECRET`:
 
 ```bash
-# Generate a strong JWT secret
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-Paste the output into `JWT_SECRET`. See [Environment variables](#environment-variables) for the full list.
-
-### 4. Generate Prisma client
-
-```bash
-npx prisma generate
-```
-
-### 5. Run migrations
+### 4. Run migrations
 
 ```bash
 npx prisma migrate dev
 ```
 
-### 6. Seed reserved slugs
-
-This populates the `reserved_slugs` table with system-critical names (`app`, `api`, `www`, etc.) that schools cannot claim as their subdomain.
+### 5. Seed reserved slugs
 
 ```bash
 npm run db:seed
 ```
 
-### 7. Start the dev server
+### 6. Seed your SUPER_ADMIN
+
+Add to `.env`:
+
+```bash
+SUPER_ADMIN_EMAIL=you@klassrun.com
+SUPER_ADMIN_PASSWORD=use-a-password-manager-min-16-chars
+SUPER_ADMIN_FIRST_NAME=Your
+SUPER_ADMIN_LAST_NAME=Name
+```
+
+Then run:
+
+```bash
+npm run db:seed:super-admin
+```
+
+### 7. Start the server
 
 ```bash
 npm run dev
 ```
 
-The API runs at `http://localhost:4000`.
+Verify: `curl http://localhost:4000/api/health` should return `{"status":"ok"...}`.
 
-### 8. Verify
+### 8. Run the auth tests
+
+In a second terminal:
 
 ```bash
-curl http://localhost:4000/api/health
+npm run test:auth
 ```
 
-Expected response:
-
-```json
-{
-  "status": "ok",
-  "service": "klassrun-api",
-  "timestamp": "2026-05-04T10:30:00.000Z"
-}
-```
+Expected: 30+ ✓ passes.
 
 ---
 
 ## Environment variables
 
-| Variable | Required | Default | Description |
+| Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `DATABASE_URL` | ✅ | — | PostgreSQL connection string |
-| `JWT_SECRET` | ✅ | — | Secret for signing JWT tokens (use a strong random value) |
-| `JWT_EXPIRES_IN` | | `7d` | JWT expiration |
-| `PORT` | | `4000` | API listens on this port |
+| `JWT_SECRET` | ✅ | — | Secret for signing JWTs (32-byte random) |
+| `JWT_EXPIRES_IN` | | `7d` | Token TTL |
+| `PORT` | | `4000` | Listen port |
 | `NODE_ENV` | | `development` | `development` or `production` |
-| `FRONTEND_URL` | | `http://localhost:3000` | klassrun-app URL for CORS |
-| `ANTHROPIC_API_KEY` | _(soon)_ | — | Claude API key for AI features |
-| `PAYSTACK_SECRET_KEY` | _(soon)_ | — | Paystack server-side key for billing |
-| `VERCEL_API_TOKEN` | _(soon)_ | — | Vercel API token for subdomain provisioning |
-| `VERCEL_PROJECT_ID` | _(soon)_ | — | klassrun-app Vercel project ID |
-
-Never commit `.env` — it's already in `.gitignore`.
+| `FRONTEND_URL` | | `http://localhost:3000` | Used to build invite/portal links |
+| `ALLOWED_ORIGINS` | | (sensible defaults) | Comma-separated CORS allow-list |
+| `PORTAL_BASE_DOMAIN` | | `klassrun.com` | Used to build portal URLs in production |
+| `RESEND_API_KEY` | prod only | — | Resend API key. Empty = stub mode |
+| `EMAIL_FROM` | | `Klassrun <info@klassrun.com>` | Default sender |
+| `EMAIL_REPLY_TO` | | `info@klassrun.com` | Default reply-to |
+| `SUPER_ADMIN_*` | for seeding | — | See `seed-super-admin.js` |
+| `ANTHROPIC_API_KEY` | for AI | — | Claude API (coming) |
+| `PAYSTACK_SECRET_KEY` | for billing | — | Paystack (coming) |
 
 ---
 
 ## Database
 
-### Schema
+The full schema lives in `prisma/schema.prisma`. ERD + concepts in
+[`docs/schema.md`](docs/schema.md).
 
-The schema lives in `prisma/schema.prisma`. Visual diagram and concepts in [`docs/schema.md`](docs/schema.md).
+**Tenant tables** (per-school, scoped by `schoolId`):
 
-**Core models:**
+`schools`, `users`, `academic_sessions`, `classes`, `subjects`,
+`lesson_notes`, `assessments`, `question_bank`, `subscriptions`
 
-| Model | Purpose |
-|---|---|
-| `School` | The tenant. Each has a unique `slug` for subdomain routing |
-| `User` | Teachers, school admins, super admins. `schoolId` is nullable for super admins |
-| `AcademicSession` | "2025/2026", current term, per school |
-| `Class` | JSS 1, SS 2, etc., per school |
-| `Subject` | Mathematics, English, etc., per class |
-| `LessonNote` | AI-generated lesson notes |
-| `Assessment` | AI-generated exam papers, with question deduplication tracking |
-| `QuestionBankEntry` | Every question generated, fingerprinted to prevent reuse |
-| `Subscription` | Paystack subscription, with 14-day trial |
+**Shared tables** (not per-school):
 
-**Shared (not per-school):**
-
-| Model | Purpose |
-|---|---|
-| `CurriculumTopic` | NERDC/WAEC curriculum, read-only for schools |
-| `ReservedSlug` | System-protected subdomains (`app`, `api`, etc.) |
+`curriculum_topics`, `reserved_slugs`, `auth_events`
 
 ### Migrations
-
-Schema changes always go through migrations. Never edit the database directly.
 
 ```bash
 # After editing schema.prisma:
 npx prisma migrate dev --name <descriptive-name>
 
-# Examples:
-npx prisma migrate dev --name add-attendance-table
-npx prisma migrate dev --name add-parent-role
-```
-
-If a migration involves backfilling existing data (e.g. adding a `NOT NULL` column to a populated table), use:
-
-```bash
-npx prisma migrate dev --name <name> --create-only
-# ...edit the generated SQL to UPDATE existing rows...
-npx prisma migrate dev
-```
-
-### Seeding
-
-```bash
-npm run db:seed
-```
-
-Currently seeds `ReservedSlug`. Future seeds will populate sample curriculum data and demo schools (the seed script is idempotent — safe to run repeatedly).
-
-### Resetting the dev database
-
-```bash
+# Reset dev DB completely:
 npx prisma migrate reset
 ```
 
-This drops all data, re-runs every migration, and runs the seed. **Only use in development.**
+### Seeds
+
+```bash
+npm run db:seed              # Reserved slugs
+npm run db:seed:super-admin  # Platform-wide admin user (you)
+```
 
 ---
 
 ## API reference
 
-### Authentication
+All endpoints return JSON. Errors have shape `{ error: { message: string, field?: string } }`.
 
-All authenticated endpoints expect a JWT in the `Authorization` header:
+Authenticated endpoints expect `Authorization: Bearer <token>`.
 
+### Auth endpoints
+
+#### `POST /api/auth/signup`
+
+Create a school + initial school admin + 14-day trial. Returns JWT.
+
+Body:
+```json
+{
+  "email": "principal@school.com",
+  "password": "minimum-8-characters",
+  "firstName": "Adegbite",
+  "lastName": "Mohammed",
+  "schoolName": "Greenfield Academy",
+  "schoolState": "Lagos",
+  "schoolAddress": "(optional)",
+  "slug": "(optional — auto-generated if omitted)"
+}
 ```
-Authorization: Bearer <token>
+
+Response (201):
+```json
+{
+  "message": "Account created successfully",
+  "token": "eyJhbGc...",
+  "user": { "id": "...", "schoolSlug": "greenfield-academy", "..." },
+  "portalUrl": "https://app.klassrun.com/dashboard",
+  "trialEndsAt": "2026-05-19T..."
+}
 ```
 
-Tokens are issued on signup and login. They include `userId`, `role`, and `schoolId`.
+#### `POST /api/auth/login`
 
-### Endpoints
+Standard email/password login.
 
-#### Auth
+#### `GET /api/auth/me`
 
-| Method | Endpoint | Auth | Description |
-|---|---|---|---|
-| `POST` | `/api/auth/signup` | Public | Create school + initial school admin |
-| `POST` | `/api/auth/login` | Public | Login with email + password |
-| `POST` | `/api/auth/invite` | School Admin | Invite a teacher to join the school |
-| `POST` | `/api/auth/invite/:token/accept` | Public | Accept invite and set password |
-| `GET` | `/api/auth/me` | Authenticated | Current user + school info |
+Returns current user + school context. Requires JWT.
 
-**Signup example:**
+#### `POST /api/auth/invite`
+
+School admin invites a teacher. Generates a 7-day token and emails the
+teacher. Audit-logged. Requires JWT + `SCHOOL_ADMIN` role.
+
+#### `POST /api/auth/invite/resend/:teacherId`
+
+Generates a new token (invalidating the old one) and resends the invite.
+Requires JWT + `SCHOOL_ADMIN`.
+
+#### `POST /api/auth/invite/:token/accept`
+
+Teacher accepts invitation. Requires the recipient to confirm their email
+address — protects against link sharing.
+
+Body:
+```json
+{
+  "password": "minimum-8-characters",
+  "email": "must-match-invitation@school.com"
+}
+```
+
+Failure modes (all audit-logged):
+- 404 — token doesn't exist
+- 400 — already accepted, or expired
+- 403 — email doesn't match the invitation
+
+### Slug endpoints
+
+Public (no auth).
+
+#### `GET /api/slug/check?slug=<slug>`
+
+Returns `{ available: bool, error: string|null }`.
+
+#### `GET /api/slug/suggest?name=<name>&state=<state>&limit=<n>`
+
+Returns `{ suggestions: string[] }` — up to N available slug ideas.
+
+#### `GET /api/slug/generate?name=<name>`
+
+Pure transform. Returns `{ slug, valid, error }`. No DB lookup.
+
+---
+
+## Auth & security model
+
+- **Passwords:** bcrypt with cost 12. Minimum 8 characters enforced.
+- **JWT:** signed with `JWT_SECRET`, 7-day TTL by default. Carries
+  `userId`, `role`, `schoolId`. Verified on every authenticated request.
+- **Tenant isolation:** every per-school query includes `schoolId` from
+  the JWT. Enforced at controller level today; will move to a scoped
+  Prisma client middleware in a follow-up.
+- **Invite tokens:** 256-bit random, expire after 7 days, single-use.
+  Acceptance requires email confirmation to prevent link sharing.
+  Token rotation on resend.
+- **Login responses:** identical for unknown email, inactive account, and
+  wrong password. Doesn't leak which exists.
+- **Rate limiting:** TODO — to be added in a follow-up. For now relies on
+  Cloudflare's edge rate limiting.
+
+---
+
+## Email
+
+Resend is the email provider. The wrapper at `src/lib/email.js` includes
+**stub mode**: if `RESEND_API_KEY` is missing, emails are logged to the
+console instead of sent. This lets devs run locally without credentials.
+
+In production, the absence of `RESEND_API_KEY` triggers a loud warning at
+startup — set the key on Railway.
+
+Templates live in `src/lib/email-templates/`. Each template exports a
+function that returns `{ subject, html }`. Add new templates following
+the same shape.
+
+---
+
+## Audit logging
+
+Security-sensitive events are written to the `auth_events` table:
+
+- `SIGNUP_SUCCESS`
+- `LOGIN_SUCCESS`
+- `LOGIN_FAILED` (with reason: `unknown_email`, `inactive`, `wrong_password`)
+- `INVITE_SENT`
+- `INVITE_RESENT`
+- `INVITE_ACCEPTED`
+- `INVITE_FAILED` (with reason: `unknown_token`, `already_accepted`, `expired`, `email_mismatch`)
+- `SUPER_ADMIN_SEEDED`
+
+Each row records the timestamp, IP address, user agent, and freeform
+`metadata` JSON. Audit log writes are best-effort — failures are logged
+to console but never break user-facing requests.
+
+To inspect:
 
 ```bash
-curl -X POST http://localhost:4000/api/auth/signup \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "principal@kingscollege.ng",
-    "password": "secure-password",
-    "firstName": "John",
-    "lastName": "Doe",
-    "schoolName": "Kings College Lagos",
-    "schoolAddress": "Lagos Island, Lagos",
-    "schoolState": "Lagos"
-  }'
-```
-
-**Login example:**
-
-```bash
-curl -X POST http://localhost:4000/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "principal@kingscollege.ng",
-    "password": "secure-password"
-  }'
-```
-
-Response includes `token` — use it in subsequent requests.
-
-#### Schools
-
-| Method | Endpoint | Auth | Description |
-|---|---|---|---|
-| `GET` | `/api/schools/me` | Authenticated | Current school details + stats |
-
-#### Notes _(AI generation in progress)_
-
-| Method | Endpoint | Auth | Description |
-|---|---|---|---|
-| `GET` | `/api/notes` | Authenticated | List lesson notes for current school |
-| `POST` | `/api/notes` | Teacher | Generate a new lesson note (AI) — soon |
-
-#### Assessments _(AI generation in progress)_
-
-| Method | Endpoint | Auth | Description |
-|---|---|---|---|
-| `GET` | `/api/assessments` | Authenticated | List assessments |
-| `POST` | `/api/assessments` | Teacher | Generate exam paper (AI) — soon |
-
-#### Curriculum
-
-| Method | Endpoint | Auth | Description |
-|---|---|---|---|
-| `GET` | `/api/curriculum/topics` | Public | Browse NERDC topics |
-
-Query params: `subject`, `className`, `term`.
-
-```bash
-curl "http://localhost:4000/api/curriculum/topics?subject=Mathematics&className=JSS%201&term=FIRST"
+npm run db:studio
+# Open auth_events table
 ```
 
 ---
 
-## Multi-tenancy model
+## Multi-tenancy
 
-Klassrun is a **multi-tenant SaaS**. Every school operates in complete isolation under one shared database.
+Each school is identified by a unique `slug` mapping to a future subdomain
+(`{slug}.klassrun.com`). Currently all schools land on `app.klassrun.com/dashboard`
+— per-school subdomains are deferred until we hit Vercel Pro (or migrate
+to Cloudflare Pages with custom domains).
 
-### How it works
+Slug rules:
+- 3–40 chars, lowercase + digits + hyphens, no leading/trailing/consecutive hyphens
+- Must not appear in `reserved_slugs` (system-protected names)
+- Must be unique across all schools
 
-- Every per-school table has a `schoolId` foreign key
-- Every query must scope by `schoolId` — enforced at the data layer (`src/config/db.js`)
-- JWTs carry `schoolId` — middleware validates the JWT's school matches the request's subdomain school
-- Each school has a unique `slug` mapping to their subdomain:
-  - `greenfield-academy` → `greenfield-academy.klassrun.com`
-  - `sunrise-school` → `sunrise-school.klassrun.com`
-
-### What this guarantees
-
-A user authenticated for Greenfield Academy **cannot**, even with a manipulated JWT, access Sunrise School's data. The middleware refuses cross-tenant requests.
-
-### Reserved slugs
-
-Schools cannot claim system-critical names. The `reserved_slugs` table blocks:
-
-- Klassrun system: `app`, `api`, `www`, `admin`, `docs`, `help`, `support`
-- Auth flows: `login`, `signup`, `auth`
-- Common collisions: `klassrun`, `school`, `test`, `staging`, `dev`, `demo`
-
-Full list in `prisma/seed.js`.
-
-For implementation details, see [`docs/architecture.md`](docs/architecture.md).
+The slug utility (`src/utils/slug.js`) handles generation from school names,
+validation, availability checking, and suggestion of alternatives.
 
 ---
 
-## Development workflow
-
-### Useful commands
+## Testing
 
 ```bash
-npm run dev              # Start dev server with auto-reload (nodemon)
-npm run start            # Start production server
-npm run db:migrate       # Run pending migrations
-npm run db:push          # Push schema changes without creating migration (dev only)
-npm run db:seed          # Run the seed script
-npm run db:studio        # Open Prisma Studio (visual DB browser)
+npm run test:slug   # Slug utility (16 tests, no server required)
+npm run test:auth   # Full auth flow (30+ tests, server must be running)
 ```
 
-### Conventions
-
-- **Branches:** `feat/<short-name>`, `fix/<short-name>`, `docs/<short-name>`
-- **Commits:** Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`, `chore:`)
-- **PRs:** Reference the issue or roadmap item being addressed
-
-### Schema changes
-
-When you change `prisma/schema.prisma`, you **must**:
-
-1. Run `npx prisma migrate dev --name <descriptive>` to create a migration
-2. Update [`docs/schema.md`](docs/schema.md) if the change affects relationships or adds/removes models
-3. Update [`docs/architecture.md`](docs/architecture.md) if the change affects the multi-tenancy model
-4. Commit migration files alongside the schema change
-
-Never edit a migration file that's already been pushed.
+The auth test creates a real school and teacher in your dev database with
+unique timestamps, so it's safe to run repeatedly without cleanup.
 
 ---
 
-## Documentation
+## Deployment
 
-- [`docs/schema.md`](docs/schema.md) — Database schema (ERD), key concepts, indexes
-- [`docs/architecture.md`](docs/architecture.md) — System architecture, request flow, deployment topology
-
-For product-level documentation (positioning, roadmap, feature priorities), see the central Klassrun roadmap doc.
-
----
-
-## Roadmap
-
-Klassrun is currently in **Phase 1 — AI academic wedge**. The API roadmap follows:
-
-- ✅ Auth, schools, classes, subjects (initial schema)
-- ✅ Multi-tenancy foundation (slugs, status, reserved slugs, trial period)
-- ⏳ Slug utility module (generation, validation, availability check)
-- ⏳ Tenant resolver service
-- ⏳ Scoped Prisma client wrapper
-- ⏳ Anthropic API integration with education-only system prompts
-- ⏳ AI lesson note generator
-- ⏳ AI scheme of work generator
-- ⏳ AI exam question generator with WAEC/NECO style
-- ⏳ Question bank deduplication service
-- ⏳ Paystack integration with 14-day trial
-- ⏳ Vercel API integration for subdomain provisioning
+Production target: **Railway** (API + PostgreSQL). See
+[`SETUP_GUIDE.md`](../SETUP_GUIDE.md) section 9 for step-by-step.
 
 ---
 
@@ -484,7 +450,4 @@ UNLICENSED — © Klassrun Technologies Ltd. All rights reserved.
 
 - **Website:** [klassrun.com](https://klassrun.com)
 - **Email:** info@klassrun.com
-- **LinkedIn:** [klassrun-ng](https://www.linkedin.com/in/klassrun-ng-33013b400/)
-- **Instagram:** [@klassrun](https://www.instagram.com/klassrun/)
-
-Klassrun Technologies Ltd · RC 9463863 · Lagos, Nigeria
+- **Company:** Klassrun Technologies Ltd · RC 9463863 · Lagos, Nigeria

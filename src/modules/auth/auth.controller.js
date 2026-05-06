@@ -1,38 +1,105 @@
+// src/modules/auth/auth.controller.js
+//
+// Authentication controllers. Covers the full lifecycle:
+//   - signup           Create a new school + admin user + trial subscription
+//   - login            Authenticate and issue JWT
+//   - inviteTeacher    School admin invites a teacher (one-time link)
+//   - resendInvite     Generate a new invite token, invalidate old one
+//   - acceptInvite     Teacher accepts invite, must confirm their email
+//   - me               Return current user + school context
+//
+// Security model:
+//   - Passwords hashed with bcrypt (cost 12)
+//   - JWT carries userId, role, schoolId (used for tenant isolation)
+//   - Invite tokens are 256-bit random, expire after INVITE_TTL_DAYS
+//   - Invite acceptance requires the recipient to confirm their email,
+//     blocking generic link sharing
+//   - Every security-sensitive event is recorded in AuthEvent
+
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const prisma = require('../../config/db');
 const { generateToken } = require('../../utils/jwt');
+const slugUtil          = require('../../utils/slug');
+const email             = require('../../lib/email');
+const { welcomeEmail }  = require('../../lib/email-templates/welcome');
+const { inviteEmail }   = require('../../lib/email-templates/invite');
+const { recordAuthEvent } = require('../../lib/audit');
 
-// ── SCHOOL ADMIN SIGNUP ──
+const INVITE_TTL_DAYS = 7;
+const TRIAL_DAYS      = 14;
+
+// ───── SIGNUP ────────────────────────────────────────────────────────────────
 const signup = async (req, res, next) => {
   try {
-    const { email, password, firstName, lastName, schoolName, schoolAddress, schoolState } = req.body;
+    const {
+      email: signupEmail,
+      password, firstName, lastName,
+      schoolName, schoolAddress, schoolState,
+      slug: requestedSlug,
+    } = req.body;
 
-    if (!email || !password || !firstName || !lastName || !schoolName) {
-      return res.status(400).json({ error: { message: 'All fields are required' } });
+    if (!signupEmail || !password || !firstName || !lastName || !schoolName) {
+      return res.status(400).json({
+        error: { message: 'All fields are required' },
+      });
+    }
+    if (password.length < 8) {
+      return res.status(400).json({
+        error: { message: 'Password must be at least 8 characters' },
+      });
     }
 
-    // Check if email already exists
-    const existing = await prisma.user.findUnique({ where: { email } });
+    // Email uniqueness — fail fast before slug work
+    const existing = await prisma.user.findUnique({ where: { email: signupEmail } });
     if (existing) {
-      return res.status(409).json({ error: { message: 'Email already registered' } });
+      return res.status(409).json({
+        error: { message: 'Email already registered' },
+      });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 12);
+    // Resolve slug
+    let finalSlug;
+    if (requestedSlug) {
+      const cleaned = requestedSlug.trim().toLowerCase();
+      const availability = await slugUtil.isAvailable(cleaned);
+      if (!availability.available) {
+        return res.status(409).json({
+          error: { message: availability.error, field: 'slug' },
+        });
+      }
+      finalSlug = cleaned;
+    } else {
+      const suggestions = await slugUtil.suggest(schoolName, { limit: 1, state: schoolState });
+      if (suggestions.length === 0) {
+        return res.status(400).json({
+          error: {
+            message: 'Could not generate a usable slug. Please provide one explicitly.',
+            field: 'slug',
+          },
+        });
+      }
+      finalSlug = suggestions[0];
+    }
 
-    // Create school + admin user + first academic session in a transaction
+    // All-or-nothing creation
+    const hashedPassword = await bcrypt.hash(password, 12);
+    const trialEndsAt    = new Date(Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
+
     const result = await prisma.$transaction(async (tx) => {
       const school = await tx.school.create({
         data: {
           name: schoolName,
           address: schoolAddress,
           state: schoolState,
+          slug: finalSlug,
+          status: 'PROVISIONING',
         },
       });
 
       const user = await tx.user.create({
         data: {
-          email,
+          email: signupEmail,
           password: hashedPassword,
           firstName,
           lastName,
@@ -42,7 +109,6 @@ const signup = async (req, res, next) => {
         },
       });
 
-      // Create default academic session
       await tx.academicSession.create({
         data: {
           name: '2025/2026',
@@ -52,10 +118,43 @@ const signup = async (req, res, next) => {
         },
       });
 
+      await tx.subscription.create({
+        data: {
+          plan: 'starter',
+          status: 'TRIAL',
+          startDate: new Date(),
+          endDate: trialEndsAt,
+          trialEndsAt,
+          schoolId: school.id,
+        },
+      });
+
       return { school, user };
     });
 
     const token = generateToken(result.user.id, result.user.role);
+    const portalUrl = buildPortalUrl(result.school.slug);
+
+    await recordAuthEvent('SIGNUP_SUCCESS', {
+      req,
+      email: signupEmail,
+      userId: result.user.id,
+      schoolId: result.school.id,
+      metadata: { slug: result.school.slug },
+    });
+
+    // Fire-and-forget welcome email
+    email.send({
+      to: signupEmail,
+      ...welcomeEmail({
+        firstName,
+        schoolName,
+        portalUrl,
+        trialEndsAt: trialEndsAt.toISOString(),
+      }),
+    }).catch((err) => {
+      console.error('Welcome email failed:', err.message);
+    });
 
     res.status(201).json({
       message: 'Account created successfully',
@@ -68,41 +167,65 @@ const signup = async (req, res, next) => {
         role: result.user.role,
         schoolId: result.school.id,
         schoolName: result.school.name,
+        schoolSlug: result.school.slug,
+        schoolStatus: result.school.status,
       },
+      portalUrl,
+      trialEndsAt: trialEndsAt.toISOString(),
     });
   } catch (err) {
+    if (err?.code === 'P2002' && err?.meta?.target?.includes('slug')) {
+      return res.status(409).json({
+        error: { message: 'That slug was just taken. Please pick another.', field: 'slug' },
+      });
+    }
     next(err);
   }
 };
 
-// ── LOGIN ──
+// ───── LOGIN ────────────────────────────────────────────────────────────────
 const login = async (req, res, next) => {
   try {
-    const { email, password } = req.body;
+    const { email: loginEmail, password } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ error: { message: 'Email and password are required' } });
+    if (!loginEmail || !password) {
+      return res.status(400).json({
+        error: { message: 'Email and password are required' },
+      });
     }
 
     const user = await prisma.user.findUnique({
-      where: { email },
-      include: { school: { select: { id: true, name: true } } },
+      where: { email: loginEmail },
+      include: {
+        school: { select: { id: true, name: true, slug: true, status: true } },
+      },
     });
 
-    if (!user) {
-      return res.status(401).json({ error: { message: 'Invalid email or password' } });
-    }
-
-    if (!user.isActive) {
-      return res.status(401).json({ error: { message: 'Account is deactivated' } });
-    }
-
-    const validPassword = await bcrypt.compare(password, user.password);
-    if (!validPassword) {
-      return res.status(401).json({ error: { message: 'Invalid email or password' } });
+    if (!user || !user.isActive || !(await bcrypt.compare(password, user.password))) {
+      // Same generic error for all failure modes — don't leak which exists
+      await recordAuthEvent('LOGIN_FAILED', {
+        req,
+        email: loginEmail,
+        metadata: {
+          reason: !user ? 'unknown_email'
+                : !user.isActive ? 'inactive'
+                : 'wrong_password',
+        },
+      });
+      return res.status(401).json({
+        error: { message: 'Invalid email or password' },
+      });
     }
 
     const token = generateToken(user.id, user.role);
+    const portalUrl = user.school?.slug ? buildPortalUrl(user.school.slug) : null;
+
+    await recordAuthEvent('LOGIN_SUCCESS', {
+      req,
+      userId: user.id,
+      email: user.email,
+      schoolId: user.school?.id ?? null,
+    });
 
     res.json({
       message: 'Login successful',
@@ -113,48 +236,80 @@ const login = async (req, res, next) => {
         firstName: user.firstName,
         lastName: user.lastName,
         role: user.role,
-        schoolId: user.school.id,
-        schoolName: user.school.name,
+        schoolId: user.school?.id ?? null,
+        schoolName: user.school?.name ?? null,
+        schoolSlug: user.school?.slug ?? null,
+        schoolStatus: user.school?.status ?? null,
       },
+      portalUrl,
     });
   } catch (err) {
     next(err);
   }
 };
 
-// ── INVITE TEACHER (school admin only) ──
+// ───── INVITE TEACHER ───────────────────────────────────────────────────────
 const inviteTeacher = async (req, res, next) => {
   try {
-    const { email, firstName, lastName } = req.body;
-    const { schoolId } = req.user;
+    const { email: teacherEmail, firstName, lastName } = req.body;
+    const { schoolId, id: inviterId } = req.user;
 
-    if (!email || !firstName || !lastName) {
-      return res.status(400).json({ error: { message: 'Email, first name, and last name are required' } });
+    if (!teacherEmail || !firstName || !lastName) {
+      return res.status(400).json({
+        error: { message: 'Email, first name, and last name are required' },
+      });
     }
 
-    const existing = await prisma.user.findUnique({ where: { email } });
+    const existing = await prisma.user.findUnique({ where: { email: teacherEmail } });
     if (existing) {
-      return res.status(409).json({ error: { message: 'This email is already registered' } });
+      return res.status(409).json({
+        error: { message: 'This email is already registered' },
+      });
     }
 
-    const inviteToken = crypto.randomBytes(32).toString('hex');
+    const school = await prisma.school.findUnique({ where: { id: schoolId } });
+    const inviter = await prisma.user.findUnique({ where: { id: inviterId } });
+
+    const inviteToken     = crypto.randomBytes(32).toString('hex');
+    const inviteExpiresAt = new Date(Date.now() + INVITE_TTL_DAYS * 24 * 60 * 60 * 1000);
 
     const teacher = await prisma.user.create({
       data: {
-        email,
-        password: '', // Will be set when they accept the invite
+        email: teacherEmail,
+        password: '',
         firstName,
         lastName,
         role: 'TEACHER',
         inviteToken,
+        inviteExpiresAt,
         inviteAccepted: false,
         schoolId,
       },
     });
 
-    // In production, send invite email here
-    // For now, return the invite token
-    const inviteLink = `${process.env.FRONTEND_URL}/invite/${inviteToken}`;
+    const inviteUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/invite/${inviteToken}`;
+
+    await recordAuthEvent('INVITE_SENT', {
+      req,
+      userId: inviterId,
+      email: teacherEmail,
+      schoolId,
+      metadata: { teacherId: teacher.id, inviteExpiresAt },
+    });
+
+    // Fire-and-forget email
+    email.send({
+      to: teacherEmail,
+      ...inviteEmail({
+        teacherFirstName: firstName,
+        schoolName: school.name,
+        inviterName: `${inviter.firstName} ${inviter.lastName}`,
+        inviteUrl,
+        expiresAt: inviteExpiresAt.toISOString(),
+      }),
+    }).catch((err) => {
+      console.error('Invite email failed:', err.message);
+    });
 
     res.status(201).json({
       message: 'Teacher invited successfully',
@@ -164,34 +319,146 @@ const inviteTeacher = async (req, res, next) => {
         firstName: teacher.firstName,
         lastName: teacher.lastName,
       },
-      inviteLink,
+      inviteLink: inviteUrl,        // useful for dev/testing
+      expiresAt: inviteExpiresAt.toISOString(),
     });
   } catch (err) {
     next(err);
   }
 };
 
-// ── ACCEPT INVITE ──
+// ───── RESEND INVITE ────────────────────────────────────────────────────────
+//
+// Generates a new token, invalidates the old one, sends a fresh email.
+// Useful when an invite expires or the original email is lost.
+const resendInvite = async (req, res, next) => {
+  try {
+    const { teacherId } = req.params;
+    const { schoolId, id: inviterId } = req.user;
+
+    const teacher = await prisma.user.findFirst({
+      where: { id: teacherId, schoolId, role: 'TEACHER' },
+    });
+
+    if (!teacher) {
+      return res.status(404).json({
+        error: { message: 'Teacher not found in your school' },
+      });
+    }
+    if (teacher.inviteAccepted) {
+      return res.status(400).json({
+        error: { message: 'This teacher has already accepted their invite' },
+      });
+    }
+
+    const school  = await prisma.school.findUnique({ where: { id: schoolId } });
+    const inviter = await prisma.user.findUnique({ where: { id: inviterId } });
+
+    const newToken     = crypto.randomBytes(32).toString('hex');
+    const newExpiresAt = new Date(Date.now() + INVITE_TTL_DAYS * 24 * 60 * 60 * 1000);
+
+    await prisma.user.update({
+      where: { id: teacher.id },
+      data:  { inviteToken: newToken, inviteExpiresAt: newExpiresAt },
+    });
+
+    const inviteUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/invite/${newToken}`;
+
+    await recordAuthEvent('INVITE_RESENT', {
+      req,
+      userId: inviterId,
+      email: teacher.email,
+      schoolId,
+      metadata: { teacherId: teacher.id },
+    });
+
+    email.send({
+      to: teacher.email,
+      ...inviteEmail({
+        teacherFirstName: teacher.firstName,
+        schoolName: school.name,
+        inviterName: `${inviter.firstName} ${inviter.lastName}`,
+        inviteUrl,
+        expiresAt: newExpiresAt.toISOString(),
+      }),
+    }).catch((err) => {
+      console.error('Invite resend email failed:', err.message);
+    });
+
+    res.json({
+      message: 'Invite resent',
+      inviteLink: inviteUrl,
+      expiresAt: newExpiresAt.toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ───── ACCEPT INVITE ────────────────────────────────────────────────────────
+//
+// Teacher arrives at /invite/:token and submits their password.
+// We require them to also send their email — this prevents the link
+// from being shared with someone else who didn't receive it.
 const acceptInvite = async (req, res, next) => {
   try {
     const { token } = req.params;
-    const { password } = req.body;
+    const { password, email: confirmEmail } = req.body;
 
-    if (!password || password.length < 6) {
-      return res.status(400).json({ error: { message: 'Password must be at least 6 characters' } });
+    if (!password || password.length < 8) {
+      return res.status(400).json({
+        error: { message: 'Password must be at least 8 characters' },
+      });
+    }
+    if (!confirmEmail) {
+      return res.status(400).json({
+        error: { message: 'Email confirmation is required' },
+      });
     }
 
     const user = await prisma.user.findUnique({
       where: { inviteToken: token },
-      include: { school: { select: { id: true, name: true } } },
+      include: {
+        school: { select: { id: true, name: true, slug: true, status: true } },
+      },
     });
 
+    // Generic "not found" for all failure modes here too
     if (!user) {
-      return res.status(404).json({ error: { message: 'Invalid or expired invite' } });
+      await recordAuthEvent('INVITE_FAILED', {
+        req, email: confirmEmail,
+        metadata: { reason: 'unknown_token' },
+      });
+      return res.status(404).json({
+        error: { message: 'Invalid or expired invite' },
+      });
     }
-
     if (user.inviteAccepted) {
-      return res.status(400).json({ error: { message: 'Invite already accepted' } });
+      await recordAuthEvent('INVITE_FAILED', {
+        req, email: user.email, userId: user.id,
+        metadata: { reason: 'already_accepted' },
+      });
+      return res.status(400).json({
+        error: { message: 'Invite already accepted' },
+      });
+    }
+    if (user.inviteExpiresAt && user.inviteExpiresAt < new Date()) {
+      await recordAuthEvent('INVITE_FAILED', {
+        req, email: user.email, userId: user.id,
+        metadata: { reason: 'expired' },
+      });
+      return res.status(400).json({
+        error: { message: 'This invite has expired. Ask your school admin to resend it.' },
+      });
+    }
+    if (user.email.toLowerCase() !== confirmEmail.trim().toLowerCase()) {
+      await recordAuthEvent('INVITE_FAILED', {
+        req, email: confirmEmail, userId: user.id,
+        metadata: { reason: 'email_mismatch', expected: user.email },
+      });
+      return res.status(403).json({
+        error: { message: 'Email does not match the invitation' },
+      });
     }
 
     const hashedPassword = await bcrypt.hash(password, 12);
@@ -202,13 +469,19 @@ const acceptInvite = async (req, res, next) => {
         password: hashedPassword,
         inviteAccepted: true,
         inviteToken: null,
+        inviteExpiresAt: null,
       },
     });
 
-    const jwtToken = generateToken(user.id, user.role);
+    const jwtToken  = generateToken(user.id, user.role);
+    const portalUrl = user.school?.slug ? buildPortalUrl(user.school.slug) : null;
+
+    await recordAuthEvent('INVITE_ACCEPTED', {
+      req, userId: user.id, email: user.email, schoolId: user.school?.id,
+    });
 
     res.json({
-      message: 'Invite accepted. Welcome to KlassRun!',
+      message: 'Invite accepted. Welcome to Klassrun!',
       token: jwtToken,
       user: {
         id: user.id,
@@ -216,16 +489,19 @@ const acceptInvite = async (req, res, next) => {
         firstName: user.firstName,
         lastName: user.lastName,
         role: user.role,
-        schoolId: user.school.id,
-        schoolName: user.school.name,
+        schoolId: user.school?.id ?? null,
+        schoolName: user.school?.name ?? null,
+        schoolSlug: user.school?.slug ?? null,
+        schoolStatus: user.school?.status ?? null,
       },
+      portalUrl,
     });
   } catch (err) {
     next(err);
   }
 };
 
-// ── GET CURRENT USER ──
+// ───── ME ───────────────────────────────────────────────────────────────────
 const me = async (req, res, next) => {
   try {
     const user = await prisma.user.findUnique({
@@ -233,9 +509,7 @@ const me = async (req, res, next) => {
       include: {
         school: {
           select: {
-            id: true,
-            name: true,
-            logoUrl: true,
+            id: true, name: true, slug: true, status: true, logoUrl: true,
             sessions: { where: { isCurrent: true }, take: 1 },
           },
         },
@@ -249,12 +523,17 @@ const me = async (req, res, next) => {
         firstName: user.firstName,
         lastName: user.lastName,
         role: user.role,
-        school: {
-          id: user.school.id,
-          name: user.school.name,
-          logoUrl: user.school.logoUrl,
-          currentSession: user.school.sessions[0] || null,
-        },
+        school: user.school
+          ? {
+              id: user.school.id,
+              name: user.school.name,
+              slug: user.school.slug,
+              status: user.school.status,
+              logoUrl: user.school.logoUrl,
+              portalUrl: buildPortalUrl(user.school.slug),
+              currentSession: user.school.sessions[0] || null,
+            }
+          : null,
       },
     });
   } catch (err) {
@@ -262,4 +541,21 @@ const me = async (req, res, next) => {
   }
 };
 
-module.exports = { signup, login, inviteTeacher, acceptInvite, me };
+// ───── HELPERS ──────────────────────────────────────────────────────────────
+function buildPortalUrl(slug) {
+  if (!slug) return null;
+
+  const isProduction = process.env.NODE_ENV === 'production';
+  const portalBaseDomain = process.env.PORTAL_BASE_DOMAIN || 'klassrun.com';
+
+  if (isProduction) {
+    // For now, all schools land on app.klassrun.com/dashboard — subdomains deferred.
+    return `https://app.${portalBaseDomain}/dashboard`;
+  }
+
+  // Local dev — single shared dashboard URL for now
+  const frontend = process.env.FRONTEND_URL || 'http://localhost:3000';
+  return `${frontend}/dashboard`;
+}
+
+module.exports = { signup, login, inviteTeacher, resendInvite, acceptInvite, me };

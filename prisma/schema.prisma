@@ -91,6 +91,8 @@ model User {
   isActive       Boolean  @default(true)
   inviteToken    String?  @unique
   inviteAccepted Boolean  @default(false)
+  inviteExpiresAt DateTime?
+  authEvents      AuthEvent[]
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -309,4 +311,37 @@ model ReservedSlug {
   createdAt DateTime @default(now())
 
   @@map("reserved_slugs")
+}
+
+enum AuthEventType {
+  SIGNUP_SUCCESS
+  LOGIN_SUCCESS
+  LOGIN_FAILED
+  INVITE_SENT
+  INVITE_ACCEPTED
+  INVITE_FAILED
+  INVITE_RESENT
+  PASSWORD_RESET_REQUESTED
+  PASSWORD_RESET_COMPLETED
+  SUPER_ADMIN_SEEDED
+}
+
+model AuthEvent {
+  id          String        @id @default(uuid())
+  type        AuthEventType
+  email       String?
+  ipAddress   String?
+  userAgent   String?
+  metadata    Json?
+  createdAt   DateTime      @default(now())
+
+  userId      String?
+  user        User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  schoolId    String?
+
+  @@index([type])
+  @@index([email])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("auth_events")
 }

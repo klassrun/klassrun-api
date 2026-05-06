@@ -1,7 +1,7 @@
 {
   "name": "klassrun-api",
   "version": "0.1.0",
-  "description": "Klassrun API — the AI-powered school operating system for Nigerian schools",
+  "description": "KlassRun API — AI Lesson Note & School Management Platform",
   "main": "src/server.js",
   "scripts": {
     "dev": "nodemon src/server.js",
@@ -9,17 +9,13 @@
     "db:migrate": "npx prisma migrate dev",
     "db:push": "npx prisma db push",
     "db:seed": "node prisma/seed.js",
-    "db:seed:super-admin": "node scripts/seed-super-admin.js",
-    "db:studio": "npx prisma studio",
-    "test:slug": "node scripts/test-slug.js",
-    "test:auth": "node scripts/test-auth.js"
+    "db:studio": "npx prisma studio"
   },
   "keywords": [
     "edtech",
     "nigeria",
-    "school-management",
-    "ai",
-    "saas"
+    "lesson-notes",
+    "school-management"
   ],
   "author": "Klassrun Technologies Ltd",
   "license": "UNLICENSED",
@@ -33,11 +29,10 @@
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.3",
     "nodemon": "^3.1.14",
-    "pg": "^8.20.0",
-    "resend": "^4.8.0"
+    "pg": "^8.20.0"
   },
   "devDependencies": {
-    "@prisma/client": "^7.8.0",
+    "@prisma/client": "^7.7.0",
     "prisma": "^7.7.0"
   }
 }
