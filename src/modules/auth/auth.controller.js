@@ -314,7 +314,7 @@ const inviteTeacher = async (req, res, next) => {
       },
     });
 
-    const inviteUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/invite/${inviteToken}`;
+    const inviteUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/accept-invite?token=${inviteToken}`;
 
     await recordAuthEvent('INVITE_SENT', {
       req,
@@ -389,7 +389,7 @@ const resendInvite = async (req, res, next) => {
       data:  { inviteToken: newToken, inviteExpiresAt: newExpiresAt },
     });
 
-    const inviteUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/invite/${newToken}`;
+    const inviteUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/accept-invite?token=${newToken}`;
 
     await recordAuthEvent('INVITE_RESENT', {
       req,

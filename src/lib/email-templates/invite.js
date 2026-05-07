@@ -3,7 +3,7 @@
 // Email sent when a school admin invites a teacher, OR when a school admin
 // resets a teacher's password (which generates a new invite link).
 
-function inviteEmail({ firstName, schoolName, inviteUrl, expiresAt, isReset = false }) {
+function inviteEmail({ teacherFirstName, schoolName, inviteUrl, expiresAt, isReset = false }) {
   const expiresDate = new Date(expiresAt).toLocaleDateString('en-NG', {
     weekday: 'long',
     year:    'numeric',
@@ -47,7 +47,7 @@ function inviteEmail({ firstName, schoolName, inviteUrl, expiresAt, isReset = fa
             <td style="padding:40px;">
               <h2 style="margin:0 0 16px 0; font-size:22px;">${heading}</h2>
               <p style="margin:0 0 16px 0; font-size:16px; line-height:1.6; color:#444;">
-                Hi ${firstName},
+                Hi ${teacherFirstName},
               </p>
               <p style="margin:0 0 24px 0; font-size:16px; line-height:1.6; color:#444;">
                 ${body}
