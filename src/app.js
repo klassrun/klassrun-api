@@ -4,11 +4,13 @@ const helmet  = require('helmet');
 
 // Route imports
 const authRoutes        = require('./modules/auth/auth.routes');
+const teacherRoutes = require('./modules/teachers/teachers.routes');
 const schoolRoutes      = require('./modules/schools/school.routes');
 const noteRoutes        = require('./modules/notes/note.routes');
 const assessmentRoutes  = require('./modules/assessments/assessment.routes');
 const curriculumRoutes  = require('./modules/curriculum/curriculum.routes');
 const slugRoutes        = require('./modules/slug/slug.routes');
+
 
 const app = express();
 
@@ -68,6 +70,7 @@ app.get('/api/health', (req, res) => {
 
 // ── ROUTES ──────────────────────────────────────────────────────────────────
 app.use('/api/auth',        authRoutes);
+app.use('/api/teachers',    teacherRoutes);
 app.use('/api/schools',     schoolRoutes);
 app.use('/api/notes',       noteRoutes);
 app.use('/api/assessments', assessmentRoutes);

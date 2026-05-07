@@ -184,62 +184,93 @@ const signup = async (req, res, next) => {
 };
 
 // ───── LOGIN ────────────────────────────────────────────────────────────────
+// ── Login (with account lockout protection) ──────────────────────────────
+const FAILED_ATTEMPTS_LIMIT = 10;
+const LOCKOUT_MINUTES       = 15;
+
 const login = async (req, res, next) => {
   try {
     const { email: loginEmail, password } = req.body;
 
     if (!loginEmail || !password) {
-      return res.status(400).json({
-        error: { message: 'Email and password are required' },
-      });
+      return res.status(400).json({ error: { message: 'Email and password are required' } });
     }
+
+    const normalizedEmail = loginEmail.trim().toLowerCase();
 
     const user = await prisma.user.findUnique({
-      where: { email: loginEmail },
-      include: {
-        school: { select: { id: true, name: true, slug: true, status: true } },
-      },
+      where: { email: normalizedEmail },
+      include: { school: { select: { id: true, name: true, slug: true, status: true } } },
     });
 
-    if (!user || !user.isActive || !(await bcrypt.compare(password, user.password))) {
-      // Same generic error for all failure modes — don't leak which exists
-      await recordAuthEvent('LOGIN_FAILED', {
-        req,
-        email: loginEmail,
-        metadata: {
-          reason: !user ? 'unknown_email'
-                : !user.isActive ? 'inactive'
-                : 'wrong_password',
-        },
-      });
-      return res.status(401).json({
-        error: { message: 'Invalid email or password' },
-      });
+    const genericInvalidCredentials = { error: { message: 'Invalid email or password' } };
+
+    if (!user) {
+      await recordAuthEvent('LOGIN_FAILED', { req, email: normalizedEmail, metadata: { reason: 'no_such_user' } });
+      return res.status(401).json(genericInvalidCredentials);
     }
 
-    const token = generateToken(user.id, user.role);
+    if (user.revokedAt) {
+      await recordAuthEvent('LOGIN_FAILED', { req, email: user.email, userId: user.id, schoolId: user.schoolId, metadata: { reason: 'revoked' } });
+      return res.status(403).json({ error: { message: 'Your access has been revoked. Please contact your school administrator.' } });
+    }
+
+    if (user.school?.status === 'SUSPENDED') {
+      await recordAuthEvent('LOGIN_FAILED', { req, email: user.email, userId: user.id, schoolId: user.schoolId, metadata: { reason: 'school_suspended' } });
+      return res.status(403).json({ error: { message: 'This school has been suspended. Contact Klassrun support.' } });
+    }
+
+    if (user.lockedUntil && user.lockedUntil > new Date()) {
+      await recordAuthEvent('LOGIN_FAILED', { req, email: user.email, userId: user.id, schoolId: user.schoolId, metadata: { reason: 'locked', lockedUntil: user.lockedUntil } });
+      const minutesLeft = Math.ceil((user.lockedUntil - Date.now()) / 60000);
+      return res.status(423).json({ error: { message: `Account temporarily locked. Try again in ${minutesLeft} minute(s).` } });
+    }
+
+    if (!user.inviteAccepted) {
+      await recordAuthEvent('LOGIN_FAILED', { req, email: user.email, userId: user.id, schoolId: user.schoolId, metadata: { reason: 'invite_not_accepted' } });
+      return res.status(403).json({ error: { message: 'Please accept your invite via the link in your email before logging in.' } });
+    }
+
+    const passwordMatch = await bcrypt.compare(password, user.password);
+
+    if (!passwordMatch) {
+      const newFailedCount = user.failedLoginCount + 1;
+      const updates = { failedLoginCount: newFailedCount };
+
+      if (newFailedCount >= FAILED_ATTEMPTS_LIMIT) {
+        updates.lockedUntil = new Date(Date.now() + LOCKOUT_MINUTES * 60 * 1000);
+        updates.failedLoginCount = 0;
+        await recordAuthEvent('ACCOUNT_LOCKED', { req, email: user.email, userId: user.id, schoolId: user.schoolId, metadata: { lockedUntil: updates.lockedUntil } });
+      }
+
+      await prisma.user.update({ where: { id: user.id }, data: updates });
+      await recordAuthEvent('LOGIN_FAILED', { req, email: user.email, userId: user.id, schoolId: user.schoolId, metadata: { reason: 'wrong_password', failedCount: newFailedCount } });
+
+      if (updates.lockedUntil) {
+        return res.status(423).json({ error: { message: `Too many failed attempts. Account locked for ${LOCKOUT_MINUTES} minutes.` } });
+      }
+      return res.status(401).json(genericInvalidCredentials);
+    }
+
+    await prisma.user.update({ where: { id: user.id }, data: { failedLoginCount: 0, lockedUntil: null } });
+
+    const token = jwt.sign(
+      { userId: user.id, role: user.role, schoolId: user.schoolId },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRES_IN },
+    );
+
     const portalUrl = user.school?.slug ? buildPortalUrl(user.school.slug) : null;
 
-    await recordAuthEvent('LOGIN_SUCCESS', {
-      req,
-      userId: user.id,
-      email: user.email,
-      schoolId: user.school?.id ?? null,
-    });
+    await recordAuthEvent('LOGIN_SUCCESS', { req, userId: user.id, email: user.email, schoolId: user.schoolId });
 
-    res.json({
+    return res.json({
       message: 'Login successful',
       token,
       user: {
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        role: user.role,
-        schoolId: user.school?.id ?? null,
-        schoolName: user.school?.name ?? null,
-        schoolSlug: user.school?.slug ?? null,
-        schoolStatus: user.school?.status ?? null,
+        id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName,
+        role: user.role, schoolId: user.schoolId, schoolName: user.school?.name,
+        schoolSlug: user.school?.slug, schoolStatus: user.school?.status,
       },
       portalUrl,
     });
@@ -247,6 +278,7 @@ const login = async (req, res, next) => {
     next(err);
   }
 };
+
 
 // ───── INVITE TEACHER ───────────────────────────────────────────────────────
 const inviteTeacher = async (req, res, next) => {

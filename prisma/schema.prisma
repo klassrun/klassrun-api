@@ -95,6 +95,10 @@ model User {
   authEvents      AuthEvent[]
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+  revokedAt        DateTime?
+  failedLoginCount Int       @default(0)
+  lockedUntil      DateTime?
+  passwordResets   PasswordResetToken[]
 
   // Relations
   schoolId    String? // CHANGED: nullable to support SUPER_ADMIN (platform-wide users)
@@ -324,6 +328,11 @@ enum AuthEventType {
   PASSWORD_RESET_REQUESTED
   PASSWORD_RESET_COMPLETED
   SUPER_ADMIN_SEEDED
+  PASSWORD_RESET_FAILED
+  TEACHER_REVOKED
+  TEACHER_REINSTATED
+  TEACHER_PASSWORD_RESET
+  ACCOUNT_LOCKED
 }
 
 model AuthEvent {
@@ -344,4 +353,20 @@ model AuthEvent {
   @@index([userId])
   @@index([createdAt])
   @@map("auth_events")
+}
+
+model PasswordResetToken {
+  id          String   @id @default(uuid())
+  tokenHash   String   @unique
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdAt   DateTime @default(now())
+  ipAddress   String?
+  userAgent   String?
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("password_reset_tokens")
 }
