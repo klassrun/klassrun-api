@@ -1,8 +1,33 @@
+# Dependencies
 node_modules/
+
+# Environment
 .env
-.next/
-dist/
-*.log
-.DS_Store
 .env.neon
+.env.localhost
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs (currently unused but future-proof)
+dist/
+build/
+
+# Installer backups
 .installer-backup-*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Prisma — DO NOT ignore prisma/migrations or schema.prisma!
+# Those MUST be in git.
