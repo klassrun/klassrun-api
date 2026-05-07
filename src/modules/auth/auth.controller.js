@@ -133,7 +133,7 @@ const signup = async (req, res, next) => {
     });
 
     const token = generateToken(result.user.id, result.user.role);
-    const portalUrl = buildPortalUrl(result.school.slug);
+    const portalUrl = slugUtil.buildPortalUrl(result.school.slug);
 
     await recordAuthEvent('SIGNUP_SUCCESS', {
       req,
@@ -430,19 +430,13 @@ const resendInvite = async (req, res, next) => {
 const acceptInvite = async (req, res, next) => {
   try {
     const { token } = req.params;
-    const { password, email: confirmEmail } = req.body;
+    const { password } = req.body;
 
     if (!password || password.length < 8) {
       return res.status(400).json({
         error: { message: 'Password must be at least 8 characters' },
       });
     }
-    if (!confirmEmail) {
-      return res.status(400).json({
-        error: { message: 'Email confirmation is required' },
-      });
-    }
-
     const user = await prisma.user.findUnique({
       where: { inviteToken: token },
       include: {
@@ -453,7 +447,7 @@ const acceptInvite = async (req, res, next) => {
     // Generic "not found" for all failure modes here too
     if (!user) {
       await recordAuthEvent('INVITE_FAILED', {
-        req, email: confirmEmail,
+        req, email: null,
         metadata: { reason: 'unknown_token' },
       });
       return res.status(404).json({
@@ -478,16 +472,6 @@ const acceptInvite = async (req, res, next) => {
         error: { message: 'This invite has expired. Ask your school admin to resend it.' },
       });
     }
-    if (user.email.toLowerCase() !== confirmEmail.trim().toLowerCase()) {
-      await recordAuthEvent('INVITE_FAILED', {
-        req, email: confirmEmail, userId: user.id,
-        metadata: { reason: 'email_mismatch', expected: user.email },
-      });
-      return res.status(403).json({
-        error: { message: 'Email does not match the invitation' },
-      });
-    }
-
     const hashedPassword = await bcrypt.hash(password, 12);
 
     await prisma.user.update({
@@ -501,7 +485,7 @@ const acceptInvite = async (req, res, next) => {
     });
 
     const jwtToken  = generateToken(user.id, user.role);
-    const portalUrl = user.school?.slug ? buildPortalUrl(user.school.slug) : null;
+    const portalUrl = user.school?.slug ? slugUtil.buildPortalUrl(user.school.slug) : null;
 
     await recordAuthEvent('INVITE_ACCEPTED', {
       req, userId: user.id, email: user.email, schoolId: user.school?.id,
