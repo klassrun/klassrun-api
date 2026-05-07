@@ -189,6 +189,22 @@ async function suggest(name, options = {}) {
 
 // ─── Exports ──────────────────────────────────────────────────────────────
 
+
+// ─── buildPortalUrl ───────────────────────────────────────────────────────
+
+/**
+ * Construct the URL where a school's dashboard lives.
+ *
+ * Currently returns the shared dashboard URL (Path A — single subdomain
+ * for all schools). When per-school subdomains are activated later, this
+ * will return https://<slug>.klassrun.com/dashboard.
+ */
+function buildPortalUrl(slug) {
+  const baseDomain = process.env.PORTAL_BASE_DOMAIN || 'klassrun.com';
+  const frontendUrl = process.env.FRONTEND_URL || `https://app.${baseDomain}`;
+  return `${frontendUrl}/dashboard`;
+}
+
 module.exports = {
   generateFromName,
   validate,
@@ -196,6 +212,7 @@ module.exports = {
   isTaken,
   isAvailable,
   suggest,
+  buildPortalUrl,
   // exported constants for tests and form validation
   MIN_LENGTH,
   MAX_LENGTH,

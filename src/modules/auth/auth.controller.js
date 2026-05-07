@@ -252,15 +252,11 @@ const login = async (req, res, next) => {
       return res.status(401).json(genericInvalidCredentials);
     }
 
+    // Login succeeded — reset failure counter, issue token
     await prisma.user.update({ where: { id: user.id }, data: { failedLoginCount: 0, lockedUntil: null } });
 
-    const token = jwt.sign(
-      { userId: user.id, role: user.role, schoolId: user.schoolId },
-      JWT_SECRET,
-      { expiresIn: JWT_EXPIRES_IN },
-    );
-
-    const portalUrl = user.school?.slug ? buildPortalUrl(user.school.slug) : null;
+    const token = generateToken(user.id, user.role);
+    const portalUrl = user.school?.slug ? slugUtil.buildPortalUrl(user.school.slug) : null;
 
     await recordAuthEvent('LOGIN_SUCCESS', { req, userId: user.id, email: user.email, schoolId: user.schoolId });
 
@@ -278,7 +274,6 @@ const login = async (req, res, next) => {
     next(err);
   }
 };
-
 
 // ───── INVITE TEACHER ───────────────────────────────────────────────────────
 const inviteTeacher = async (req, res, next) => {

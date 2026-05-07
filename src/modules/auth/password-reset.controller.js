@@ -13,7 +13,7 @@
 //   - Full audit logging at every step.
 
 const crypto = require('crypto');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const prisma = require('../../config/db');
 const email  = require('../../lib/email');
 const { passwordResetEmail }    = require('../../lib/email-templates/password-reset');
