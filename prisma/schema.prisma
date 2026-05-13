@@ -66,6 +66,11 @@ model School {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // ── Batch 2 Phase 1 — school profile fields ──
+  phone        String?
+  contactEmail String?
+  motto        String?
+
   // Relations
   users        User[]
   classes      Class[]
@@ -82,21 +87,21 @@ model School {
 }
 
 model User {
-  id             String   @id @default(uuid())
-  email          String   @unique
-  password       String
-  firstName      String
-  lastName       String
-  role           Role     @default(TEACHER)
-  isActive       Boolean  @default(true)
-  inviteToken    String?  @unique
-  inviteAccepted Boolean  @default(false)
-  inviteExpiresAt DateTime?
-  authEvents      AuthEvent[]
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id               String               @id @default(uuid())
+  email            String               @unique
+  password         String
+  firstName        String
+  lastName         String
+  role             Role                 @default(TEACHER)
+  isActive         Boolean              @default(true)
+  inviteToken      String?              @unique
+  inviteAccepted   Boolean              @default(false)
+  inviteExpiresAt  DateTime?
+  authEvents       AuthEvent[]
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
   revokedAt        DateTime?
-  failedLoginCount Int       @default(0)
+  failedLoginCount Int                  @default(0)
   lockedUntil      DateTime?
   passwordResets   PasswordResetToken[]
 
@@ -336,17 +341,17 @@ enum AuthEventType {
 }
 
 model AuthEvent {
-  id          String        @id @default(uuid())
-  type        AuthEventType
-  email       String?
-  ipAddress   String?
-  userAgent   String?
-  metadata    Json?
-  createdAt   DateTime      @default(now())
+  id        String        @id @default(uuid())
+  type      AuthEventType
+  email     String?
+  ipAddress String?
+  userAgent String?
+  metadata  Json?
+  createdAt DateTime      @default(now())
 
-  userId      String?
-  user        User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
-  schoolId    String?
+  userId   String?
+  user     User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  schoolId String?
 
   @@index([type])
   @@index([email])
@@ -356,15 +361,15 @@ model AuthEvent {
 }
 
 model PasswordResetToken {
-  id          String   @id @default(uuid())
-  tokenHash   String   @unique
-  userId      String
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  expiresAt   DateTime
-  usedAt      DateTime?
-  createdAt   DateTime @default(now())
-  ipAddress   String?
-  userAgent   String?
+  id        String    @id @default(uuid())
+  tokenHash String    @unique
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  ipAddress String?
+  userAgent String?
 
   @@index([userId])
   @@index([expiresAt])
