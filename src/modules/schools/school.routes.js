@@ -37,9 +37,8 @@ router.patch('/me', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, ne
     const prisma = require('../../config/db');
 
     // Allowlist — anything not in this set is silently dropped.
-    // Intentionally NOT editable: slug, status, slugLockedAt, customDomain, logoUrl
-    // (logoUrl is deferred to Phase 2B with Cloudinary upload)
-    const allowed = ['name', 'address', 'state', 'phone', 'contactEmail', 'motto', 'rcNumber'];
+    // batch-2b-logo-allowlist
+    const allowed = ['name', 'address', 'state', 'phone', 'contactEmail', 'motto', 'rcNumber', 'logoUrl'];
     const data = {};
 
     for (const key of allowed) {
@@ -84,5 +83,30 @@ router.patch('/me', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, ne
     next(err);
   }
 });
+
+
+// POST /api/schools/me/logo-upload-signature — get signed Cloudinary upload params
+// batch-2b-logo-upload-signature
+router.post(
+  '/me/logo-upload-signature',
+  authenticate,
+  authorize('SCHOOL_ADMIN'),
+  async (req, res, next) => {
+    try {
+      const cloud = require('../../lib/cloudinary');
+      if (!cloud.isConfigured()) {
+        return res.status(500).json({
+          error: { message: 'Logo uploads not configured. Contact support.' },
+        });
+      }
+      const params = cloud.generateLogoUploadSignature({
+        schoolId: req.user.schoolId,
+      });
+      return res.json(params);
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
 
 module.exports = router;
