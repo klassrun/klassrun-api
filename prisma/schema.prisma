@@ -150,8 +150,11 @@ model Class {
   lessonNotes LessonNote[]
   assessments Assessment[]
 
+  archivedAt DateTime? // batch-2c-phase-2-class-archive
+  updatedAt  DateTime @updatedAt @default(now())
   @@unique([schoolId, name])
   @@index([schoolId]) // NEW
+  @@index([schoolId, archivedAt])
   @@map("classes")
 }
 
@@ -349,6 +352,11 @@ enum AcademicEventType {
   SESSION_CREATED
   SESSION_MADE_CURRENT
   TERM_ADVANCED
+  // batch-2c-phase-2-class-archive
+  CLASS_CREATED
+  CLASS_UPDATED
+  CLASS_ARCHIVED
+  CLASS_RESTORED
 }
 
 
