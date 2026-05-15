@@ -54,4 +54,36 @@ function extractIp(req) {
   );
 }
 
-module.exports = { recordAuthEvent };
+
+/**
+ * Record an academic event (sessions, classes, subjects, etc.).
+ *
+ * Same fire-and-forget contract as recordAuthEvent: never throws.
+ * No req-based IP capture — academic events are admin actions in-app,
+ * the schoolId + actorId pair is enough provenance.
+ *
+ * batch-2c-phase-1-academic-audit
+ *
+ * @param {string} type      — value from AcademicEventType enum
+ * @param {Object} [opts]
+ * @param {string} [opts.schoolId]
+ * @param {string} [opts.actorId]
+ * @param {Object} [opts.metadata]
+ */
+async function recordAcademicEvent(type, opts = {}) {
+  try {
+    return await prisma.academicEvent.create({
+      data: {
+        type,
+        schoolId: opts.schoolId ?? null,
+        actorId:  opts.actorId ?? null,
+        metadata: opts.metadata ?? null,
+      },
+    });
+  } catch (err) {
+    console.error(`✗ Failed to record academic event (${type}):`, err.message);
+    return null;
+  }
+}
+
+module.exports = { recordAuthEvent, recordAcademicEvent };

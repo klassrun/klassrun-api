@@ -130,6 +130,10 @@ model AcademicSession {
 
   @@unique([schoolId, name])
   @@index([schoolId]) // NEW
+  startDate   DateTime?
+  endDate     DateTime?
+  updatedAt   DateTime @updatedAt @default(now())
+
   @@map("academic_sessions")
 }
 
@@ -340,6 +344,14 @@ enum AuthEventType {
   ACCOUNT_LOCKED
 }
 
+enum AcademicEventType {
+  // batch-2c-phase-1-academic-events
+  SESSION_CREATED
+  SESSION_MADE_CURRENT
+  TERM_ADVANCED
+}
+
+
 model AuthEvent {
   id        String        @id @default(uuid())
   type      AuthEventType
@@ -374,4 +386,18 @@ model PasswordResetToken {
   @@index([userId])
   @@index([expiresAt])
   @@map("password_reset_tokens")
+}
+
+model AcademicEvent {
+  id        String            @id @default(uuid())
+  type      AcademicEventType
+  schoolId  String
+  actorId   String?
+  metadata  Json?
+  createdAt DateTime          @default(now())
+
+  @@index([schoolId])
+  @@index([type])
+  @@index([createdAt])
+  @@map("academic_events")
 }

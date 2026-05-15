@@ -10,6 +10,7 @@ const noteRoutes        = require('./modules/notes/note.routes');
 const assessmentRoutes  = require('./modules/assessments/assessment.routes');
 const curriculumRoutes  = require('./modules/curriculum/curriculum.routes');
 const slugRoutes        = require('./modules/slug/slug.routes');
+const sessionRoutes     = require('./modules/sessions/session.routes'); // batch-2c-phase-1-sessions-mount
 
 
 const app = express();
@@ -76,6 +77,7 @@ app.use('/api/notes',       noteRoutes);
 app.use('/api/assessments', assessmentRoutes);
 app.use('/api/curriculum',  curriculumRoutes);
 app.use('/api/slug',        slugRoutes);
+app.use('/api/sessions',    sessionRoutes);
 
 // ── ERROR HANDLER ───────────────────────────────────────────────────────────
 app.use((err, req, res, next) => {
