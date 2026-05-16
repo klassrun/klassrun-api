@@ -173,8 +173,11 @@ model Subject {
   assessments  Assessment[]
   questionBank QuestionBankEntry[]
 
+  archivedAt DateTime? // batch-2c-phase-3a-subject-archive
+  updatedAt  DateTime  @updatedAt @default(now())
   @@unique([schoolId, classId, name])
   @@index([schoolId]) // NEW
+  @@index([schoolId, archivedAt])
   @@map("subjects")
 }
 
@@ -357,6 +360,11 @@ enum AcademicEventType {
   CLASS_UPDATED
   CLASS_ARCHIVED
   CLASS_RESTORED
+  // batch-2c-phase-3a-subject-archive
+  SUBJECT_CREATED
+  SUBJECT_UPDATED
+  SUBJECT_ARCHIVED
+  SUBJECT_RESTORED
 }
 
 

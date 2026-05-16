@@ -64,6 +64,24 @@ router.get('/', authenticate, async (req, res, next) => {
   }
 });
 
+// ── GET /api/classes/:id ─────────────────────────────────────────────────
+// batch-2c-phase-3a-class-show
+router.get('/:id', authenticate, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const cls = await prisma.class.findFirst({
+      where: { id, schoolId: req.user.schoolId },
+      include: { _count: { select: { subjects: true } } },
+    });
+    if (!cls) {
+      return res.status(404).json({ error: { message: 'Class not found' } });
+    }
+    res.json({ class: cls });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ── POST /api/classes ────────────────────────────────────────────────────
 router.post('/', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
   try {

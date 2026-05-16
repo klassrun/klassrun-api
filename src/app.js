@@ -12,6 +12,7 @@ const curriculumRoutes  = require('./modules/curriculum/curriculum.routes');
 const slugRoutes        = require('./modules/slug/slug.routes');
 const sessionRoutes     = require('./modules/sessions/session.routes'); // batch-2c-phase-1-sessions-mount
 const classRoutes      = require('./modules/classes/class.routes'); // batch-2c-phase-2-classes-mount
+const subjectRoutes    = require('./modules/subjects/subject.routes'); // batch-2c-phase-3a-subjects-mount
 
 
 const app = express();
@@ -80,6 +81,8 @@ app.use('/api/curriculum',  curriculumRoutes);
 app.use('/api/slug',        slugRoutes);
 app.use('/api/sessions',    sessionRoutes);
 app.use('/api/classes',     classRoutes);
+app.use('/api/classes/:classId/subjects', subjectRoutes); // batch-2c-phase-3a-subjects-mount
+app.use('/api/subjects', subjectRoutes);
 
 // ── ERROR HANDLER ───────────────────────────────────────────────────────────
 app.use((err, req, res, next) => {
