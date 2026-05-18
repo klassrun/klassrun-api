@@ -365,6 +365,9 @@ enum AcademicEventType {
   SUBJECT_UPDATED
   SUBJECT_ARCHIVED
   SUBJECT_RESTORED
+  // batch-2c-phase-3b-teacher-events
+  SUBJECT_TEACHER_ASSIGNED
+  SUBJECT_TEACHER_UNASSIGNED
 }
 
 

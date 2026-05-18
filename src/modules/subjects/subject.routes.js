@@ -1,6 +1,6 @@
 // src/modules/subjects/subject.routes.js
 //
-// Batch 2C Phase 3a — Subjects (CRUD + Archive).
+// Batch 2C Phase 3a + 3b — Subjects (CRUD + Archive + Teacher Assignment).
 // Inline-handler style matching class.routes.js / session.routes.js.
 // All routes scoped by req.user.schoolId. All authenticated.
 //
@@ -9,6 +9,8 @@
 //   /api/subjects                    → id-addressed: PATCH, archive, restore
 //
 // batch-2c-phase-3a-subjects-routes
+// batch-2c-phase-3b-subjects-include-teacher
+// batch-2c-phase-3b-subjects-patch-teacher
 
 const router = require('express').Router({ mergeParams: true });
 const { authenticate, authorize } = require('../../middleware/auth');
@@ -16,6 +18,13 @@ const prisma = require('../../config/db');
 const { recordAcademicEvent } = require('../../lib/audit');
 
 const MAX_NAME = 50;
+
+// Prisma include for embedding the assigned teacher in subject responses.
+const TEACHER_INCLUDE = {
+  teacher: {
+    select: { id: true, firstName: true, lastName: true, email: true },
+  },
+};
 
 function validateName(value) {
   if (typeof value !== 'string') return { ok: false, error: 'Subject name is required' };
@@ -27,9 +36,13 @@ function validateName(value) {
   return { ok: true, value: trimmed };
 }
 
+function teacherDisplayName(t) {
+  if (!t) return null;
+  return `${t.firstName} ${t.lastName}`.trim();
+}
+
 // ── GET / (list) ─────────────────────────────────────────────────────────
 // Mounted at /api/classes/:classId/subjects → classId from req.params
-// Also mounted at /api/subjects, but list without classId is not supported.
 router.get('/', authenticate, async (req, res, next) => {
   try {
     const { classId } = req.params;
@@ -37,7 +50,6 @@ router.get('/', authenticate, async (req, res, next) => {
       return res.status(400).json({ error: { message: 'classId required' } });
     }
 
-    // Verify class exists in this school
     const cls = await prisma.class.findFirst({
       where: { id: classId, schoolId: req.user.schoolId },
       select: { id: true },
@@ -52,6 +64,7 @@ router.get('/', authenticate, async (req, res, next) => {
 
     const subjects = await prisma.subject.findMany({
       where,
+      include: TEACHER_INCLUDE,
       orderBy: [
         { archivedAt: 'asc' },
         { name: 'asc' },
@@ -65,7 +78,6 @@ router.get('/', authenticate, async (req, res, next) => {
 });
 
 // ── POST / (create) ──────────────────────────────────────────────────────
-// Mounted at /api/classes/:classId/subjects
 router.post('/', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
   try {
     const { classId } = req.params;
@@ -73,7 +85,6 @@ router.post('/', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next)
       return res.status(400).json({ error: { message: 'classId required' } });
     }
 
-    // Verify class exists and isn't archived
     const cls = await prisma.class.findFirst({
       where: { id: classId, schoolId: req.user.schoolId },
     });
@@ -99,6 +110,7 @@ router.post('/', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next)
           schoolId: req.user.schoolId,
           classId,
         },
+        include: TEACHER_INCLUDE,
       });
 
       recordAcademicEvent('SUBJECT_CREATED', {
@@ -122,25 +134,27 @@ router.post('/', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next)
 });
 
 // ── PATCH /:id ───────────────────────────────────────────────────────────
-// Mounted at /api/subjects/:id (allowlist: name only in 3a)
+// Allowlist: name, teacherId (3b activates teacherId).
 router.patch('/:id', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
   try {
     const { id } = req.params;
 
     const existing = await prisma.subject.findFirst({
       where: { id, schoolId: req.user.schoolId },
+      include: TEACHER_INCLUDE,
     });
     if (!existing) {
       return res.status(404).json({ error: { message: 'Subject not found' } });
     }
 
-    // Allowlist: name only. teacherId silently dropped (Phase 3b activates).
-    const allowed = ['name'];
+    const allowed = ['name', 'teacherId'];
     const data = {};
     const changes = {};
+    let teacherChange = null; // { from: {id, name}|null, to: {id, name}|null }
 
     for (const key of allowed) {
       if (!(key in (req.body || {}))) continue;
+
       if (key === 'name') {
         const check = validateName(req.body.name);
         if (!check.ok) {
@@ -149,6 +163,59 @@ router.patch('/:id', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, n
         if (check.value !== existing.name) {
           data.name = check.value;
           changes.name = { from: existing.name, to: check.value };
+        }
+      }
+
+      if (key === 'teacherId') {
+        // Coerce empty string to null
+        let nextId = req.body.teacherId;
+        if (nextId === '' || nextId === undefined) nextId = null;
+
+        if (nextId !== null && typeof nextId !== 'string') {
+          return res.status(400).json({
+            error: { message: 'teacherId must be a string or null', field: 'teacherId' },
+          });
+        }
+
+        const prevId = existing.teacherId || null;
+
+        if (nextId !== prevId) {
+          if (nextId !== null) {
+            // Validate: must be a TEACHER, same school, not revoked
+            const teacher = await prisma.user.findFirst({
+              where: {
+                id: nextId,
+                schoolId: req.user.schoolId,
+                role: 'TEACHER',
+                revokedAt: null,
+              },
+              select: { id: true, firstName: true, lastName: true },
+            });
+            if (!teacher) {
+              return res.status(400).json({
+                error: {
+                  message: 'Teacher not found or not active in this school',
+                  field: 'teacherId',
+                },
+              });
+            }
+            data.teacherId = teacher.id;
+            teacherChange = {
+              from: existing.teacher
+                ? { id: existing.teacher.id, name: teacherDisplayName(existing.teacher) }
+                : null,
+              to: { id: teacher.id, name: teacherDisplayName(teacher) },
+            };
+          } else {
+            // Unassign
+            data.teacherId = null;
+            teacherChange = {
+              from: existing.teacher
+                ? { id: existing.teacher.id, name: teacherDisplayName(existing.teacher) }
+                : null,
+              to: null,
+            };
+          }
         }
       }
     }
@@ -161,13 +228,64 @@ router.patch('/:id', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, n
       const updated = await prisma.subject.update({
         where: { id },
         data,
+        include: TEACHER_INCLUDE,
       });
 
-      recordAcademicEvent('SUBJECT_UPDATED', {
-        schoolId: req.user.schoolId,
-        actorId: req.user.id,
-        metadata: { subjectId: updated.id, changes },
-      });
+      // Emit SUBJECT_UPDATED for name changes (if any)
+      if (changes.name) {
+        recordAcademicEvent('SUBJECT_UPDATED', {
+          schoolId: req.user.schoolId,
+          actorId: req.user.id,
+          metadata: { subjectId: updated.id, changes },
+        });
+      }
+
+      // Emit teacher events for teacher changes
+      if (teacherChange) {
+        // Reassignment (uuid-A → uuid-B) → emit BOTH unassign(A) and assign(B)
+        if (teacherChange.from && teacherChange.to) {
+          recordAcademicEvent('SUBJECT_TEACHER_UNASSIGNED', {
+            schoolId: req.user.schoolId,
+            actorId: req.user.id,
+            metadata: {
+              subjectId: updated.id,
+              previousTeacherId: teacherChange.from.id,
+              previousTeacherName: teacherChange.from.name,
+            },
+          });
+          recordAcademicEvent('SUBJECT_TEACHER_ASSIGNED', {
+            schoolId: req.user.schoolId,
+            actorId: req.user.id,
+            metadata: {
+              subjectId: updated.id,
+              teacherId: teacherChange.to.id,
+              teacherName: teacherChange.to.name,
+            },
+          });
+        } else if (teacherChange.to) {
+          // null → uuid
+          recordAcademicEvent('SUBJECT_TEACHER_ASSIGNED', {
+            schoolId: req.user.schoolId,
+            actorId: req.user.id,
+            metadata: {
+              subjectId: updated.id,
+              teacherId: teacherChange.to.id,
+              teacherName: teacherChange.to.name,
+            },
+          });
+        } else if (teacherChange.from) {
+          // uuid → null
+          recordAcademicEvent('SUBJECT_TEACHER_UNASSIGNED', {
+            schoolId: req.user.schoolId,
+            actorId: req.user.id,
+            metadata: {
+              subjectId: updated.id,
+              previousTeacherId: teacherChange.from.id,
+              previousTeacherName: teacherChange.from.name,
+            },
+          });
+        }
+      }
 
       res.json({ subject: updated });
     } catch (e) {
@@ -202,6 +320,7 @@ router.post('/:id/archive', authenticate, authorize('SCHOOL_ADMIN'), async (req,
     const updated = await prisma.subject.update({
       where: { id },
       data: { archivedAt: new Date() },
+      include: TEACHER_INCLUDE,
     });
 
     recordAcademicEvent('SUBJECT_ARCHIVED', {
@@ -242,6 +361,7 @@ router.post('/:id/restore', authenticate, authorize('SCHOOL_ADMIN'), async (req,
     const updated = await prisma.subject.update({
       where: { id },
       data: { archivedAt: null },
+      include: TEACHER_INCLUDE,
     });
 
     recordAcademicEvent('SUBJECT_RESTORED', {
