@@ -1,0 +1,8 @@
+-- Batch 3 Phase 1 — LessonNote.deletedAt + 3 new AcademicEventType values
+
+ALTER TABLE "lesson_notes"
+  ADD COLUMN IF NOT EXISTS "deletedAt" TIMESTAMP(3);
+
+ALTER TYPE "AcademicEventType" ADD VALUE IF NOT EXISTS 'LESSON_NOTE_GENERATED';
+ALTER TYPE "AcademicEventType" ADD VALUE IF NOT EXISTS 'LESSON_NOTE_EDITED';
+ALTER TYPE "AcademicEventType" ADD VALUE IF NOT EXISTS 'LESSON_NOTE_DISCARDED';

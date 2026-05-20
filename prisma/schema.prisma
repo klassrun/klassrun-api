@@ -195,6 +195,7 @@ model LessonNote {
   pdfUrl       String?
   isEdited     Boolean     @default(false)
   editHistory  Json?
+  deletedAt    DateTime? // batch-3-phase-1-lesson-note-deleted
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 
@@ -368,6 +369,10 @@ enum AcademicEventType {
   // batch-2c-phase-3b-teacher-events
   SUBJECT_TEACHER_ASSIGNED
   SUBJECT_TEACHER_UNASSIGNED
+  // batch-3-phase-1-lesson-events
+  LESSON_NOTE_GENERATED
+  LESSON_NOTE_EDITED
+  LESSON_NOTE_DISCARDED
 }
 
 
