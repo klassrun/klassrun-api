@@ -5,6 +5,7 @@ const helmet  = require('helmet');
 // Route imports
 const authRoutes        = require('./modules/auth/auth.routes');
 const teacherRoutes = require('./modules/teachers/teachers.routes');
+const teachersSelfRoutes = require('./modules/teachers/teachers-self.routes'); // batch-2c-phase-4a-teachers-self-mount
 const schoolRoutes      = require('./modules/schools/school.routes');
 const noteRoutes        = require('./modules/notes/note.routes');
 const assessmentRoutes  = require('./modules/assessments/assessment.routes');
@@ -73,6 +74,7 @@ app.get('/api/health', (req, res) => {
 
 // ── ROUTES ──────────────────────────────────────────────────────────────────
 app.use('/api/auth',        authRoutes);
+app.use('/api/teachers/me', teachersSelfRoutes); // batch-2c-phase-4a-teachers-self-mount
 app.use('/api/teachers',    teacherRoutes);
 app.use('/api/schools',     schoolRoutes);
 app.use('/api/notes',       noteRoutes);
