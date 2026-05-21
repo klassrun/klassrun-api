@@ -110,6 +110,7 @@ model User {
   school      School?      @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   lessonNotes LessonNote[]
   assessments Assessment[]
+  subjects    Subject[]            @relation("SubjectTeacher")
 
   @@index([schoolId]) // NEW: faster tenant-scoped queries
   @@map("users")
@@ -169,6 +170,8 @@ model Subject {
   classId      String
   class        Class               @relation(fields: [classId], references: [id], onDelete: Cascade)
   teacherId    String?
+  // hotfix-batch-2c-phase-3b-subject-teacher-relation
+  teacher      User?               @relation("SubjectTeacher", fields: [teacherId], references: [id])
   lessonNotes  LessonNote[]
   assessments  Assessment[]
   questionBank QuestionBankEntry[]
