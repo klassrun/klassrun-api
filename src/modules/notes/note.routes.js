@@ -27,6 +27,10 @@ const WEEK_MIN  = 1;
 const WEEK_MAX  = 13;
 const DURATION_MIN = 10;
 const DURATION_MAX = 240;
+// batch-3-phase-1-5-subtopics
+const SUB_TOPIC_MIN = 1;
+const SUB_TOPIC_MAX = 100;
+const SUB_TOPICS_MAX_COUNT = 10;
 
 function isStringInRange(v, min, max) {
   if (typeof v !== 'string') return false;
@@ -38,7 +42,7 @@ function isStringInRange(v, min, max) {
 // TEACHER-only. Generates AI lesson note, persists, returns saved record.
 router.post('/generate', authenticate, authorize('TEACHER'), async (req, res, next) => {
   try {
-    const { classId, subjectId, topic, week, duration, additionalNotes } = req.body || {};
+    const { classId, subjectId, topic, week, duration, additionalNotes, subTopics } = req.body || {};
 
     // ── Validate input ──
     if (typeof classId !== 'string' || !classId) {
@@ -78,6 +82,37 @@ router.post('/generate', authenticate, authorize('TEACHER'), async (req, res, ne
           error: { message: `Notes for AI must be a string of at most ${NOTES_MAX} characters`, field: 'additionalNotes' },
         });
       }
+    }
+
+    // batch-3-phase-1-5-subtopics-validate
+    let subTopicsClean = null;
+    if (subTopics !== undefined && subTopics !== null) {
+      if (!Array.isArray(subTopics)) {
+        return res.status(400).json({
+          error: { message: 'subTopics must be an array of strings', field: 'subTopics' },
+        });
+      }
+      if (subTopics.length > SUB_TOPICS_MAX_COUNT) {
+        return res.status(400).json({
+          error: { message: `At most ${SUB_TOPICS_MAX_COUNT} sub-topics allowed`, field: 'subTopics' },
+        });
+      }
+      const cleaned = [];
+      for (const s of subTopics) {
+        if (typeof s !== 'string') {
+          return res.status(400).json({
+            error: { message: 'Each sub-topic must be a string', field: 'subTopics' },
+          });
+        }
+        const t = s.trim();
+        if (t.length < SUB_TOPIC_MIN || t.length > SUB_TOPIC_MAX) {
+          return res.status(400).json({
+            error: { message: `Each sub-topic must be ${SUB_TOPIC_MIN}-${SUB_TOPIC_MAX} characters`, field: 'subTopics' },
+          });
+        }
+        cleaned.push(t);
+      }
+      subTopicsClean = cleaned.length > 0 ? cleaned : null;
     }
 
     // ── Billing gate (402) ──
@@ -127,6 +162,7 @@ router.post('/generate', authenticate, authorize('TEACHER'), async (req, res, ne
         duration:        durationVal,
         session:         { name: session.name, currentTerm: session.currentTerm },
         additionalNotes: additionalNotes,
+        subTopics:       subTopicsClean,
       });
     } catch (err) {
       if (err.code === 'NO_API_KEY') {
@@ -195,6 +231,7 @@ router.post('/generate', authenticate, authorize('TEACHER'), async (req, res, ne
         model:        aiResult.model,
         inputTokens:  aiResult.inputTokens,
         outputTokens: aiResult.outputTokens,
+        subTopics:    subTopicsClean,
       },
     });
 

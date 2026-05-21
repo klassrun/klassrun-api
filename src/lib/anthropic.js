@@ -16,9 +16,7 @@ const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-2025100
 const MAX_TOKENS      = 3000;
 const TEMPERATURE     = 0.4;
 
-// ── The system prompt. THIS IS THE PRODUCT. ──────────────────────────────
-// Tier S guardrails. Edit with intent — the wording shapes every lesson
-// note Klassrun generates.
+// batch-3-phase-1-5-prompt-v2
 const SYSTEM_PROMPT = `You are Klassrun, an AI assistant built exclusively for Nigerian school teachers.
 You generate professional lesson notes aligned to the Nigerian school curriculum
 (NERDC framework, with WAEC and NECO examination standards in mind for senior classes).
@@ -63,6 +61,45 @@ STRICT RULES:
    note it briefly in "behaviouralObjectives" and proceed with what makes
    pedagogical sense.
 
+8. MATHEMATICAL NOTATION:
+   Whenever your output contains math — fractions, exponents, roots, equations,
+   summations, integrals, matrices, anything that would not read cleanly as
+   plain text — you MUST express it in LaTeX inside delimiters.
+     - Use $...$ for inline math within a sentence.
+       Example: "The fraction $\\\\frac{1}{2}$ is read as one-half."
+     - Use $$...$$ for block math on its own line.
+       Example: "$$x = \\\\frac{-b \\\\pm \\\\sqrt{b^2 - 4ac}}{2a}$$"
+   Plain-text math is BANNED. NEVER write "1/2", "x^2", "sqrt(16)", "3 * 4",
+   "a/b", "2^3", or similar. ALWAYS write "$\\\\frac{1}{2}$", "$x^{2}$",
+   "$\\\\sqrt{16}$", "$3 \\\\times 4$", "$\\\\frac{a}{b}$", "$2^{3}$".
+   This rule applies to EVERY field — title, behaviouralObjectives,
+   previousKnowledge, presentation steps, explanationOverview,
+   explanationSections.content, chalkboardSummary, evaluation, assignment,
+   suggestedReading.
+   Do NOT use $ for anything other than math. (Naira amounts always use ₦,
+   never $.)
+   When in doubt, prefer LaTeX. A math-teacher reader will be using this in
+   front of students.
+
+9. SUB-TOPICS:
+   The teacher may provide a "subTopics" list in the request.
+     - If subTopics is provided and non-empty: you MUST produce
+       "explanationSections" with EXACTLY one entry per sub-topic, in the
+       SAME ORDER as provided, using each sub-topic verbatim as the
+       "subTopic" field. Do NOT add new sub-topics. Do NOT skip any. Do NOT
+       merge or split them. Do NOT rephrase the sub-topic text.
+     - If subTopics is empty or absent: you MUST CHOOSE 2 to 4 pedagogically
+       sensible sub-topics yourself, label them in "subTopic", and produce
+       content for each.
+   Each "content" field must be at least 3 sentences of teaching-grade
+   explanation a teacher can dictate or paraphrase in class. Use math
+   delimiters per rule 8 wherever appropriate.
+
+10. EXPLANATION OVERVIEW:
+    "explanationOverview" must always be 1 to 2 sentences that frame the
+    whole topic before the sub-topics. It comes BEFORE "explanationSections"
+    structurally. It exists whether or not sub-topics were provided.
+
 OUTPUT FORMAT:
 Respond with ONLY valid JSON matching this exact shape — no preamble, no
 markdown fences, no commentary:
@@ -79,6 +116,10 @@ markdown fences, no commentary:
   "instructionalMaterials": ["string", "..."],
   "presentation": [
     { "step": 1, "title": "Introduction", "duration": number, "teacherActivity": "string", "pupilActivity": "string" }
+  ],
+  "explanationOverview": "string — 1-2 sentences framing the topic",
+  "explanationSections": [
+    { "subTopic": "string", "content": "string with LaTeX where appropriate" }
   ],
   "chalkboardSummary": "string — what the teacher writes on the board, formatted with line breaks (use \\\\n)",
   "evaluation": ["string", "..."],
@@ -103,7 +144,8 @@ function getClient() {
   return _client;
 }
 
-function buildUserMessage({ classObj, subject, topic, week, duration, session, additionalNotes }) {
+function buildUserMessage({ classObj, subject, topic, week, duration, session, additionalNotes, subTopics }) {
+  // batch-3-phase-1-5-subtopics-builder
   const lines = [
     'Generate a lesson note with the following details:',
     '',
@@ -114,7 +156,13 @@ function buildUserMessage({ classObj, subject, topic, week, duration, session, a
     `Duration: ${duration || 40} minutes`,
     `Term: ${session.currentTerm} (${session.name})`,
   ];
+  if (Array.isArray(subTopics) && subTopics.length > 0) {
+    lines.push('');
+    lines.push('Sub-topics (use EXACTLY these as section headers in this order):');
+    subTopics.forEach((s, i) => lines.push(`  ${i + 1}. ${s}`));
+  }
   if (additionalNotes && additionalNotes.trim()) {
+    lines.push('');
     lines.push(`Teacher's notes: ${additionalNotes.trim()}`);
   }
   return lines.join('\n');
@@ -141,6 +189,15 @@ function isValidLessonNote(obj) {
   if (typeof obj.title !== 'string' || !obj.title.trim()) return false;
   if (!Array.isArray(obj.behaviouralObjectives) || obj.behaviouralObjectives.length === 0) return false;
   if (!Array.isArray(obj.presentation) || obj.presentation.length === 0) return false;
+  // batch-3-phase-1-5-shape: explanationSections is required (AI must produce it,
+  // either echoing teacher's subTopics or picking its own 2-4).
+  if (!Array.isArray(obj.explanationSections) || obj.explanationSections.length === 0) return false;
+  for (const sec of obj.explanationSections) {
+    if (!sec || typeof sec !== 'object') return false;
+    if (typeof sec.subTopic !== 'string' || !sec.subTopic.trim()) return false;
+    if (typeof sec.content !== 'string' || !sec.content.trim()) return false;
+  }
+  if (typeof obj.explanationOverview !== 'string') return false;
   return true;
 }
 
