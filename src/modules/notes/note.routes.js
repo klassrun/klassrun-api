@@ -181,6 +181,12 @@ router.post('/generate', authenticate, authorize('TEACHER'), async (req, res, ne
           error: { message: err.detail || 'AI could not generate a note for this topic.' },
         });
       }
+      // hotfix-batch-3-phase-1-5-max-tokens
+      if (err.code === 'AI_TRUNCATED') {
+        return res.status(422).json({
+          error: { message: 'The AI ran out of space writing this note. Try again, or provide sub-topics to focus the output.' },
+        });
+      }
       if (err.code === 'AI_MALFORMED' || err.code === 'AI_INVALID') {
         return res.status(503).json({
           error: { message: 'AI returned an unusable response. Please try again.' },

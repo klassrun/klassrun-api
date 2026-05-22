@@ -13,7 +13,7 @@
 const Anthropic = require('@anthropic-ai/sdk').default || require('@anthropic-ai/sdk');
 
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001';
-const MAX_TOKENS      = 3000;
+const MAX_TOKENS      = 6000; // hotfix-batch-3-phase-1-5-max-tokens (was 3000, truncated Mathematics + LaTeX notes)
 const TEMPERATURE     = 0.4;
 
 // batch-3-phase-1-5-prompt-v2
@@ -50,7 +50,7 @@ STRICT RULES:
       "talk about", "various examples". Replace every one with a CONCRETE
       action: which question to ask, which example to give, which scenario
       to walk through.
-    - If a presentation step is shorter than 20 words of teacher activity,
+    - If a presentation step is shorter than 12 words of teacher activity,
       you have been too vague. Rewrite it.
 6. For "suggestedReading", give GENERIC source types (e.g. "Nigerian Junior
    Secondary Mathematics textbook", "NERDC-approved curriculum guide for
@@ -305,6 +305,19 @@ async function generateLessonNote(params) {
   if (text === 'I can only help with Nigerian school lesson planning.') {
     const err = new Error('AI refused the request');
     err.code = 'AI_REFUSED';
+    throw err;
+  }
+
+  // hotfix-batch-3-phase-1-5-max-tokens
+  // Detect truncation BEFORE JSON.parse. Parsing truncated JSON fails;
+  // the retry hits the same cap and wastes another full generation.
+  if (result.stopReason === 'max_tokens') {
+    console.error('[generateLessonNote] truncated at max_tokens:', {
+      outputTokens: result.outputTokens,
+      textLength:   text.length,
+    });
+    const err = new Error('AI output truncated at max_tokens (' + result.outputTokens + ' tokens)');
+    err.code = 'AI_TRUNCATED';
     throw err;
   }
 
