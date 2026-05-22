@@ -181,6 +181,20 @@ router.post('/generate', authenticate, authorize('TEACHER'), async (req, res, ne
           error: { message: err.detail || 'AI could not generate a note for this topic.' },
         });
       }
+      // hotfix-batch-3-phase-1-5-cost-control
+      if (err.code === 'AI_TRANSIENT') {
+        // 429 rate limit or 529 overloaded — Anthropic-side issue, transient.
+        return res.status(503).json({
+          error: { message: 'AI service is busy. Please try again in a minute.' },
+        });
+      }
+      if (err.code === 'AI_PERMANENT') {
+        // 400/401/403 — bad input, auth, or billing issue. Will not self-resolve.
+        console.error('[POST /api/notes/generate] AI_PERMANENT error — needs admin attention:', err.message);
+        return res.status(503).json({
+          error: { message: 'AI service is misconfigured. Please contact support.' },
+        });
+      }
       // hotfix-batch-3-phase-1-5-max-tokens
       if (err.code === 'AI_TRUNCATED') {
         return res.status(422).json({

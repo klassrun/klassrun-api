@@ -201,6 +201,29 @@ function isValidLessonNote(obj) {
   return true;
 }
 
+// hotfix-batch-3-phase-1-5-cost-control
+// Classify an Anthropic SDK error into our internal error codes.
+// Anthropic SDK errors have .status (HTTP status from the API).
+function classifyAnthropicError(err) {
+  const status = err && err.status;
+  if (status === 429 || status === 529) {
+    const wrapped = new Error('Anthropic transient error (' + status + '): ' + (err.message || 'unknown'));
+    wrapped.code = 'AI_TRANSIENT';
+    wrapped.status = status;
+    return wrapped;
+  }
+  if (status === 400 || status === 401 || status === 403) {
+    const wrapped = new Error('Anthropic permanent error (' + status + '): ' + (err.message || 'unknown'));
+    wrapped.code = 'AI_PERMANENT';
+    wrapped.status = status;
+    return wrapped;
+  }
+  const wrapped = new Error('Anthropic API error: ' + (err.message || err));
+  wrapped.code = 'AI_API_ERROR';
+  wrapped.status = status;
+  return wrapped;
+}
+
 async function callAnthropic(userMessage, temperature) {
   // hotfix-batch-3-phase-1-5-diagnostic-logs
   const client = getClient();
@@ -285,10 +308,9 @@ async function generateLessonNote(params) {
   try {
     result = await callAnthropic(userMessage, TEMPERATURE);
   } catch (err) {
+    // hotfix-batch-3-phase-1-5-cost-control
     if (err.code === 'NO_API_KEY') throw err;
-    const wrapped = new Error(`Anthropic API error: ${err.message || err}`);
-    wrapped.code = 'AI_API_ERROR';
-    throw wrapped;
+    throw classifyAnthropicError(err);
   }
 
   let text = stripFences(result.text);
@@ -330,10 +352,9 @@ async function generateLessonNote(params) {
     try {
       retry = await callAnthropic(userMessage, 0.2);
     } catch (err) {
+      // hotfix-batch-3-phase-1-5-cost-control
       if (err.code === 'NO_API_KEY') throw err;
-      const wrapped = new Error(`Anthropic API error on retry: ${err.message || err}`);
-      wrapped.code = 'AI_API_ERROR';
-      throw wrapped;
+      throw classifyAnthropicError(err);
     }
     text = stripFences(retry.text);
     try {
@@ -355,41 +376,21 @@ async function generateLessonNote(params) {
     throw err;
   }
 
+  // hotfix-batch-3-phase-1-5-cost-control
+  // No retry on validation failure — same prompt, same model, same shape;
+  // retrying usually fails again. Throw immediately, save the tokens.
   if (!isValidLessonNote(parsed)) {
-    // hotfix-batch-3-phase-1-5-diagnostic-logs
-    console.error('[generateLessonNote] first response failed isValidLessonNote:', {
+    console.error('[generateLessonNote] AI_INVALID (no retry):', {
       hasTitle:                 typeof parsed?.title === 'string' && !!parsed.title.trim(),
       hasBehaviouralObjectives: Array.isArray(parsed?.behaviouralObjectives) && parsed.behaviouralObjectives.length > 0,
       hasPresentation:          Array.isArray(parsed?.presentation) && parsed.presentation.length > 0,
       hasExplanationSections:   Array.isArray(parsed?.explanationSections) && parsed.explanationSections.length > 0,
-      explanationSectionsType:  Array.isArray(parsed?.explanationSections) ? 'array(' + parsed.explanationSections.length + ')' : typeof parsed?.explanationSections,
       hasExplanationOverview:   typeof parsed?.explanationOverview === 'string',
       topLevelKeys:             parsed && typeof parsed === 'object' ? Object.keys(parsed) : null,
     });
-    // Try once more
-    let retry;
-    try {
-      retry = await callAnthropic(userMessage, 0.2);
-    } catch (err) {
-      const wrapped = new Error(`Anthropic API error on validation retry: ${err.message || err}`);
-      wrapped.code = 'AI_API_ERROR';
-      throw wrapped;
-    }
-    text = stripFences(retry.text);
-    try {
-      parsed = JSON.parse(text);
-    } catch (e2) {
-      const err = new Error('AI output failed shape validation twice');
-      err.code = 'AI_INVALID';
-      throw err;
-    }
-    if (!isValidLessonNote(parsed)) {
-      const err = new Error('AI output missing required fields after retry');
-      err.code = 'AI_INVALID';
-      throw err;
-    }
-    result.inputTokens  += retry.inputTokens;
-    result.outputTokens += retry.outputTokens;
+    const err = new Error('AI output missing required fields');
+    err.code = 'AI_INVALID';
+    throw err;
   }
 
   return {
