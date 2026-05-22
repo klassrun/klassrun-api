@@ -202,16 +202,32 @@ function isValidLessonNote(obj) {
 }
 
 async function callAnthropic(userMessage, temperature) {
+  // hotfix-batch-3-phase-1-5-diagnostic-logs
   const client = getClient();
-  const response = await client.messages.create({
+  let response;
+  try {
+    response = await client.messages.create({
     model:       ANTHROPIC_MODEL,
     max_tokens:  MAX_TOKENS,
     temperature: temperature,
     system:      SYSTEM_PROMPT,
-    messages: [
-      { role: 'user', content: userMessage },
-    ],
-  });
+      messages: [
+        { role: 'user', content: userMessage },
+      ],
+    });
+  } catch (err) {
+    // hotfix-batch-3-phase-1-5-diagnostic-logs
+    console.error('[callAnthropic] Anthropic SDK error:', {
+      name:       err && err.name,
+      status:     err && err.status,
+      type:       err && err.type,
+      code:       err && err.code,
+      message:    err && err.message,
+      requestId:  err && (err.request_id || (err.headers && err.headers['request-id'])),
+      errorBody:  err && err.error,
+    });
+    throw err;
+  }
 
   // Extract text from content blocks
   let text = '';
@@ -276,6 +292,14 @@ async function generateLessonNote(params) {
   }
 
   let text = stripFences(result.text);
+  // hotfix-batch-3-phase-1-5-diagnostic-logs
+  console.error('[generateLessonNote] first response:', {
+    stopReason:    result.stopReason,
+    inputTokens:   result.inputTokens,
+    outputTokens:  result.outputTokens,
+    textLength:    text.length,
+    textPreview:   text.length > 500 ? text.slice(0, 250) + ' ... ' + text.slice(-250) : text,
+  });
 
   // Detect refusal sentinel — exact string per system prompt
   if (text === 'I can only help with Nigerian school lesson planning.') {
@@ -319,6 +343,16 @@ async function generateLessonNote(params) {
   }
 
   if (!isValidLessonNote(parsed)) {
+    // hotfix-batch-3-phase-1-5-diagnostic-logs
+    console.error('[generateLessonNote] first response failed isValidLessonNote:', {
+      hasTitle:                 typeof parsed?.title === 'string' && !!parsed.title.trim(),
+      hasBehaviouralObjectives: Array.isArray(parsed?.behaviouralObjectives) && parsed.behaviouralObjectives.length > 0,
+      hasPresentation:          Array.isArray(parsed?.presentation) && parsed.presentation.length > 0,
+      hasExplanationSections:   Array.isArray(parsed?.explanationSections) && parsed.explanationSections.length > 0,
+      explanationSectionsType:  Array.isArray(parsed?.explanationSections) ? 'array(' + parsed.explanationSections.length + ')' : typeof parsed?.explanationSections,
+      hasExplanationOverview:   typeof parsed?.explanationOverview === 'string',
+      topLevelKeys:             parsed && typeof parsed === 'object' ? Object.keys(parsed) : null,
+    });
     // Try once more
     let retry;
     try {

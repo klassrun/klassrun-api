@@ -187,7 +187,14 @@ router.post('/generate', authenticate, authorize('TEACHER'), async (req, res, ne
         });
       }
       // AI_API_ERROR or anything else
-      console.error('[POST /api/notes/generate] AI call failed:', err.message);
+      // hotfix-batch-3-phase-1-5-diagnostic-logs
+      console.error('[POST /api/notes/generate] AI call failed:', {
+        code:    err && err.code,
+        name:    err && err.name,
+        status:  err && err.status,
+        message: err && err.message,
+        stack:   err && err.stack ? err.stack.split('\n').slice(0, 5).join(' | ') : null,
+      });
       return res.status(503).json({
         error: { message: 'AI service temporarily unavailable. Please try again.' },
       });
