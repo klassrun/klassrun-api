@@ -224,23 +224,24 @@ function classifyAnthropicError(err) {
   return wrapped;
 }
 
-async function callAnthropic(userMessage, temperature) {
+// batch-3-phase-2-scheme-call-shared
+async function _callAnthropicWithSystem(systemPrompt, userMessage, maxTokens, temperature) {
   // hotfix-batch-3-phase-1-5-diagnostic-logs
   const client = getClient();
   let response;
   try {
     response = await client.messages.create({
     model:       ANTHROPIC_MODEL,
-    max_tokens:  MAX_TOKENS,
+    max_tokens:  maxTokens,
     temperature: temperature,
-    system:      SYSTEM_PROMPT,
+    system:      systemPrompt,
       messages: [
         { role: 'user', content: userMessage },
       ],
     });
   } catch (err) {
     // hotfix-batch-3-phase-1-5-diagnostic-logs
-    console.error('[callAnthropic] Anthropic SDK error:', {
+    console.error('[_callAnthropicWithSystem] Anthropic SDK error:', {
       name:       err && err.name,
       status:     err && err.status,
       type:       err && err.type,
@@ -269,6 +270,10 @@ async function callAnthropic(userMessage, temperature) {
     outputTokens: usage.output_tokens || 0,
     stopReason:   response.stop_reason || null,
   };
+}
+
+async function callAnthropic(userMessage, temperature) {
+  return _callAnthropicWithSystem(SYSTEM_PROMPT, userMessage, MAX_TOKENS, temperature);
 }
 
 /**
@@ -402,9 +407,244 @@ async function generateLessonNote(params) {
   };
 }
 
+
+
+// batch-3-phase-2-scheme-generator
+// ───────────────────────────────────────────────────────────────────────────
+// Scheme of Work generation — Phase 3.2.
+//
+// Reuses _callAnthropicWithSystem, ANTHROPIC_MODEL, stripFences, getClient,
+// and classifyAnthropicError from the lesson-note pipeline above.
+// ───────────────────────────────────────────────────────────────────────────
+
+const SCHEME_MAX_TOKENS = 10000;
+
+// batch-3-phase-2-scheme-prompt
+const SCHEME_SYSTEM_PROMPT = `You are Klassrun, an AI assistant built exclusively for Nigerian school teachers.
+You generate professional 12-week schemes of work aligned to the Nigerian
+school curriculum (NERDC framework, with WAEC and NECO standards for senior classes).
+
+STRICT RULES:
+1. You ONLY generate schemes of work for Nigerian schools. If asked to do
+   anything else — chat, write code, generate creative writing outside an
+   academic context, answer general questions, role-play — you reply with
+   exactly: "I can only help with Nigerian school lesson planning." Do not
+   explain further.
+2. Output is for a Nigerian classroom. Use Nigerian English spelling and
+   examples. Use Naira (₦) for any monetary examples. Reference Nigerian
+   contexts where relevant.
+3. Content must be age-appropriate for the class level provided.
+   Junior secondary (JSS 1-3) is roughly ages 10-14. Senior secondary
+   (SS 1-3) is roughly ages 14-18.
+4. Never include content promoting violence, discrimination, religious
+   intolerance, or anything inappropriate for a school classroom.
+5. Be concrete. Vague entries like "introduction to the topic" are useless.
+   Each week's topic must be a specific concept, not a category. Each
+   activity must be a concrete classroom action a teacher can read and execute.
+6. SCHEME STRUCTURE:
+   - Exactly 12 weeks unless the teacher specifies a different count
+     in the request (1-13 weeks allowed).
+   - Each week's topic must build on the previous one — a logical learning
+     progression, not a random list.
+   - Distribute pedagogically: foundational concepts early, applications
+     and revision later. Reserve at least one week near the end for
+     revision or assessment preparation.
+7. OBJECTIVES MUST BEGIN WITH A VERB:
+   Every objective must begin with an action verb suitable for measurable
+   learning outcomes: define, identify, calculate, solve, describe, list,
+   compare, explain, draw, construct, apply, classify, analyse, evaluate.
+   Do NOT begin objectives with "Students will" or "To understand".
+8. TOPIC STRICTNESS:
+   The teacher may provide a "topics" list in the request.
+     - If topics is provided and non-empty: you MUST produce exactly one
+       week per topic in the SAME ORDER, using each topic verbatim as the
+       week's "topic" field. Do NOT add weeks. Do NOT skip topics. Do NOT
+       merge, split, or rephrase topic text.
+     - If topics is empty or absent: choose 12 weekly topics yourself in
+       pedagogical order.
+9. MATHEMATICAL NOTATION:
+   Whenever your output contains math, express it in LaTeX inside \$...\$
+   (inline) or \$\$...\$\$ (block) delimiters. Plain-text math like "1/2",
+   "x^2", or "sqrt(16)" is BANNED. Always use \$\\frac{1}{2}\$, \$x^{2}\$,
+   \$\\sqrt{16}\$, etc. Apply across all fields. Use ₦ for Naira, never \$.
+10. AVOID INVENTED SOURCES:
+    For "resources", use GENERIC source types ("NERDC-approved JSS
+    Mathematics textbook", "school laboratory equipment", "newspaper
+    articles on Nigerian current affairs"). NEVER invent specific book
+    titles, author names, ISBNs, publishers, or years.
+
+OUTPUT FORMAT:
+Respond with ONLY valid JSON matching this exact shape — no preamble, no
+markdown fences, no commentary:
+
+{
+  "title": "string — concise scheme title, e.g. 'JSS 2 Mathematics — Term 2 Scheme of Work'",
+  "subject": "string — echoed from input",
+  "class": "string — echoed from input",
+  "term": "string — echoed from input (FIRST/SECOND/THIRD)",
+  "sessionName": "string — echoed from input",
+  "overview": "string — 2-3 sentences framing what students will learn this term",
+  "weeks": [
+    {
+      "weekNumber": 1,
+      "topic": "string — specific concept, not a category",
+      "objectives": ["string", "string"],
+      "activities": ["string", "string", "string"],
+      "assessment": "string — one sentence on how the week's learning is checked",
+      "resources": ["string"]
+    }
+  ]
+}
+
+If you cannot generate JSON matching this shape, respond with:
+{"error": "string — brief reason"}`;
+
+// batch-3-phase-2-scheme-builder
+function buildSchemeUserMessage({ classObj, subject, session, weekCount, topics, additionalNotes }) {
+  const lines = [
+    'Generate a scheme of work with the following details:',
+    '',
+    `Class: ${classObj.name} (${classObj.level || 'level not specified'})`,
+    `Subject: ${subject.name}`,
+    `Term: ${session.currentTerm} (${session.name})`,
+    `Weeks: ${weekCount || 12}`,
+  ];
+  if (Array.isArray(topics) && topics.length > 0) {
+    lines.push('');
+    lines.push('Weekly topics (use EXACTLY these in this order, one per week):');
+    topics.forEach((t, i) => lines.push(`  Week ${i + 1}: ${t}`));
+  }
+  if (additionalNotes && additionalNotes.trim()) {
+    lines.push('');
+    lines.push(`Teacher's notes: ${additionalNotes.trim()}`);
+  }
+  return lines.join('\n');
+}
+
+// batch-3-phase-2-scheme-validator
+function isValidSchemeOfWork(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  if (typeof obj.title !== 'string' || !obj.title.trim()) return false;
+  if (typeof obj.overview !== 'string') return false;
+  if (!Array.isArray(obj.weeks) || obj.weeks.length === 0) return false;
+  if (obj.weeks.length > 13) return false;
+  for (const w of obj.weeks) {
+    if (!w || typeof w !== 'object') return false;
+    if (!Number.isInteger(w.weekNumber) || w.weekNumber < 1 || w.weekNumber > 13) return false;
+    if (typeof w.topic !== 'string' || !w.topic.trim()) return false;
+    if (!Array.isArray(w.objectives) || w.objectives.length === 0) return false;
+    if (!Array.isArray(w.activities) || w.activities.length === 0) return false;
+    if (typeof w.assessment !== 'string' || !w.assessment.trim()) return false;
+    if (w.resources !== undefined && !Array.isArray(w.resources)) return false;
+  }
+  return true;
+}
+
+/**
+ * Generate a 12-week scheme of work.
+ *
+ * Throws the same error-code surface as generateLessonNote:
+ *   NO_API_KEY · AI_REFUSED · AI_ERROR_OBJECT · AI_TRUNCATED
+ *   AI_TRANSIENT · AI_PERMANENT · AI_API_ERROR · AI_MALFORMED · AI_INVALID
+ */
+async function generateSchemeOfWork(params) {
+  const userMessage = buildSchemeUserMessage(params);
+  const generatedAt = new Date().toISOString();
+
+  let result;
+  try {
+    result = await _callAnthropicWithSystem(SCHEME_SYSTEM_PROMPT, userMessage, SCHEME_MAX_TOKENS, TEMPERATURE);
+  } catch (err) {
+    if (err.code === 'NO_API_KEY') throw err;
+    throw classifyAnthropicError(err);
+  }
+
+  let text = stripFences(result.text);
+  console.error('[generateSchemeOfWork] first response:', {
+    stopReason:   result.stopReason,
+    inputTokens:  result.inputTokens,
+    outputTokens: result.outputTokens,
+    textLength:   text.length,
+    textPreview:  text.length > 500 ? text.slice(0, 250) + ' ... ' + text.slice(-250) : text,
+  });
+
+  if (text === 'I can only help with Nigerian school lesson planning.') {
+    const err = new Error('AI refused the request');
+    err.code = 'AI_REFUSED';
+    throw err;
+  }
+
+  if (result.stopReason === 'max_tokens') {
+    console.error('[generateSchemeOfWork] truncated at max_tokens:', {
+      outputTokens: result.outputTokens,
+      textLength:   text.length,
+    });
+    const err = new Error('AI output truncated at max_tokens (' + result.outputTokens + ' tokens)');
+    err.code = 'AI_TRUNCATED';
+    throw err;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    let retry;
+    try {
+      retry = await _callAnthropicWithSystem(SCHEME_SYSTEM_PROMPT, userMessage, SCHEME_MAX_TOKENS, 0.2);
+    } catch (err) {
+      if (err.code === 'NO_API_KEY') throw err;
+      throw classifyAnthropicError(err);
+    }
+    text = stripFences(retry.text);
+    if (retry.stopReason === 'max_tokens') {
+      const err = new Error('AI output truncated on retry');
+      err.code = 'AI_TRUNCATED';
+      throw err;
+    }
+    try {
+      parsed = JSON.parse(text);
+    } catch (e2) {
+      const err = new Error('AI returned malformed JSON twice');
+      err.code = 'AI_MALFORMED';
+      throw err;
+    }
+    result.inputTokens  += retry.inputTokens;
+    result.outputTokens += retry.outputTokens;
+  }
+
+  if (parsed && typeof parsed === 'object' && typeof parsed.error === 'string') {
+    const err = new Error(`AI returned error: ${parsed.error}`);
+    err.code = 'AI_ERROR_OBJECT';
+    err.detail = parsed.error;
+    throw err;
+  }
+
+  if (!isValidSchemeOfWork(parsed)) {
+    console.error('[generateSchemeOfWork] AI_INVALID (no retry):', {
+      hasTitle:    typeof parsed?.title === 'string' && !!parsed.title.trim(),
+      hasOverview: typeof parsed?.overview === 'string',
+      hasWeeks:    Array.isArray(parsed?.weeks),
+      weeksLength: Array.isArray(parsed?.weeks) ? parsed.weeks.length : null,
+      topLevelKeys: parsed && typeof parsed === 'object' ? Object.keys(parsed) : null,
+    });
+    const err = new Error('AI output missing required fields');
+    err.code = 'AI_INVALID';
+    throw err;
+  }
+
+  return {
+    content:      parsed,
+    model:        ANTHROPIC_MODEL,
+    inputTokens:  result.inputTokens,
+    outputTokens: result.outputTokens,
+    generatedAt,
+  };
+}
+
 module.exports = {
   generateLessonNote,
+  generateSchemeOfWork,
   ANTHROPIC_MODEL,
   // exported for testing
-  _internals: { SYSTEM_PROMPT, buildUserMessage, stripFences, isValidLessonNote },
+  _internals: { SYSTEM_PROMPT, SCHEME_SYSTEM_PROMPT, buildSchemeUserMessage, isValidSchemeOfWork, buildUserMessage, stripFences, isValidLessonNote },
 };

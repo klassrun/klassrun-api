@@ -8,6 +8,7 @@ const teacherRoutes = require('./modules/teachers/teachers.routes');
 const teachersSelfRoutes = require('./modules/teachers/teachers-self.routes'); // batch-2c-phase-4a-teachers-self-mount
 const schoolRoutes      = require('./modules/schools/school.routes');
 const noteRoutes        = require('./modules/notes/note.routes');
+const schemeRoutes      = require('./modules/schemes/scheme.routes'); // batch-3-phase-2-schemes-mount
 const assessmentRoutes  = require('./modules/assessments/assessment.routes');
 const curriculumRoutes  = require('./modules/curriculum/curriculum.routes');
 const slugRoutes        = require('./modules/slug/slug.routes');
@@ -78,6 +79,7 @@ app.use('/api/teachers/me', teachersSelfRoutes); // batch-2c-phase-4a-teachers-s
 app.use('/api/teachers',    teacherRoutes);
 app.use('/api/schools',     schoolRoutes);
 app.use('/api/notes',       noteRoutes);
+app.use('/api/schemes',     schemeRoutes); // batch-3-phase-2-schemes-mount
 app.use('/api/assessments', assessmentRoutes);
 app.use('/api/curriculum',  curriculumRoutes);
 app.use('/api/slug',        slugRoutes);

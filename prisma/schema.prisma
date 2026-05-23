@@ -81,6 +81,7 @@ model School {
   subscription Subscription?
   sessions     AcademicSession[]
 
+  schemesOfWork  SchemeOfWork[] // batch-3-phase-2-scheme-model
   @@index([slug])
   @@index([status])
   @@map("schools")
@@ -112,6 +113,7 @@ model User {
   assessments Assessment[]
   subjects    Subject[]            @relation("SubjectTeacher")
 
+  schemesOfWork  SchemeOfWork[] // batch-3-phase-2-scheme-model
   @@index([schoolId]) // NEW: faster tenant-scoped queries
   @@map("users")
 }
@@ -129,6 +131,7 @@ model AcademicSession {
   lessonNotes LessonNote[]
   assessments Assessment[]
 
+  schemesOfWork  SchemeOfWork[] // batch-3-phase-2-scheme-model
   @@unique([schoolId, name])
   @@index([schoolId]) // NEW
   startDate   DateTime?
@@ -153,6 +156,7 @@ model Class {
 
   archivedAt DateTime? // batch-2c-phase-2-class-archive
   updatedAt  DateTime @updatedAt @default(now())
+  schemesOfWork  SchemeOfWork[] // batch-3-phase-2-scheme-model
   @@unique([schoolId, name])
   @@index([schoolId]) // NEW
   @@index([schoolId, archivedAt])
@@ -178,6 +182,7 @@ model Subject {
 
   archivedAt DateTime? // batch-2c-phase-3a-subject-archive
   updatedAt  DateTime  @updatedAt @default(now())
+  schemesOfWork  SchemeOfWork[] // batch-3-phase-2-scheme-model
   @@unique([schoolId, classId, name])
   @@index([schoolId]) // NEW
   @@index([schoolId, archivedAt])
@@ -376,6 +381,11 @@ enum AcademicEventType {
   LESSON_NOTE_GENERATED
   LESSON_NOTE_EDITED
   LESSON_NOTE_DISCARDED
+
+  // batch-3-phase-2-scheme-events
+  SCHEME_GENERATED
+  SCHEME_EDITED
+  SCHEME_DISCARDED
 }
 
 
@@ -427,4 +437,35 @@ model AcademicEvent {
   @@index([type])
   @@index([createdAt])
   @@map("academic_events")
+}
+
+// batch-3-phase-2-scheme-model
+model SchemeOfWork {
+  id           String      @id @default(uuid())
+  title        String
+  content      Json
+  contentType  ContentType @default(SCHEME_OF_WORK)
+  sessionStamp String
+  pdfUrl       String?
+  isEdited     Boolean     @default(false)
+  editHistory  Json?
+  deletedAt    DateTime?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  schoolId  String
+  school    School          @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  teacherId String
+  teacher   User            @relation(fields: [teacherId], references: [id])
+  classId   String
+  class     Class           @relation(fields: [classId], references: [id])
+  subjectId String
+  subject   Subject         @relation(fields: [subjectId], references: [id])
+  sessionId String
+  session   AcademicSession @relation(fields: [sessionId], references: [id])
+
+  @@index([schoolId])
+  @@index([schoolId, subjectId, classId])
+  @@index([schoolId, deletedAt])
+  @@map("schemes_of_work")
 }
