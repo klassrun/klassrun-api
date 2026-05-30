@@ -38,7 +38,8 @@
     "jsonwebtoken": "^9.0.3",
     "nodemon": "^3.1.14",
     "pg": "^8.20.0",
-    "resend": "^4.8.0"
+    "resend": "^4.8.0",
+    "uuid": "^14.0.0"
   },
   "devDependencies": {
     "@prisma/client": "^7.8.0",

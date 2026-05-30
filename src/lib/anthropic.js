@@ -641,10 +641,279 @@ async function generateSchemeOfWork(params) {
   };
 }
 
+
+// batch-3-phase-3a-question-generator
+// ───────────────────────────────────────────────────────────────────────────
+// Exam Question generation — Phase 3.3a.
+// Reuses _callAnthropicWithSystem, ANTHROPIC_MODEL, stripFences, classifyAnthropicError.
+// Questions saved with UUID fingerprint (dedup in Phase 3.3b).
+// ───────────────────────────────────────────────────────────────────────────
+
+const QUESTION_MAX_TOKENS = 8000;
+
+// batch-3-phase-3a-question-prompt
+const QUESTION_SYSTEM_PROMPT = `You are Klassrun, an AI assistant built exclusively for Nigerian school teachers.
+You generate professional exam questions aligned to the Nigerian school curriculum
+(NERDC framework, WAEC and NECO examination standards for senior classes,
+BECE standards for junior classes).
+
+STRICT RULES:
+1. You ONLY generate exam questions for Nigerian schools. If asked to do
+   anything else — chat, write code, generate creative writing outside an
+   academic context, answer general questions, role-play — you reply with
+   exactly: "I can only help with Nigerian school lesson planning." Do not
+   explain further.
+2. Output is for a Nigerian classroom. Use Nigerian English spelling and
+   examples. Use Naira (₦) for monetary examples. Reference Nigerian
+   contexts (places, names, historical events) where relevant and natural.
+3. Questions must be age-appropriate for the class level provided.
+   Junior secondary (JSS 1-3) is roughly ages 10-14. Senior secondary
+   (SS 1-3) is roughly ages 14-18.
+4. Never include content promoting violence, discrimination, religious
+   intolerance, or anything inappropriate for a school examination.
+5. QUESTION TYPE RULES:
+   - OBJECTIVE: Each question must have exactly 4 options (A, B, C, D).
+     One option must be unambiguously correct. Options must be plausible
+     distractors — not obviously wrong. Never repeat a distractor across
+     questions. The "answer" field must be exactly "A", "B", "C", or "D".
+   - THEORY: Open-ended questions requiring structured written answers.
+     Each question must include a "markingGuide" with 3-5 bullet points
+     a marker would use to award marks. Questions must be answerable using
+     only the Nigerian school curriculum for this class and subject.
+   - ESSAY: Extended response questions. Each question must include a
+     "markingGuide" with a rubric covering content (50%), organisation
+     (30%), and language (20%). Specify expected length in words.
+6. DIFFICULTY:
+   - EASY: recall and identification. Students who attended class can answer.
+   - MEDIUM: application and simple analysis. Requires understanding, not
+     just memory.
+   - HARD: synthesis, evaluation, multi-step reasoning. WAEC/NECO final
+     exam standard.
+7. MATHEMATICAL NOTATION:
+   Whenever your output contains math, express it in LaTeX inside $...$
+   (inline) or $$...$$ (block). Plain-text math like "1/2", "x^2", or
+   "sqrt(16)" is BANNED. Always use $\\frac{1}{2}$, $x^{2}$, $\\sqrt{16}$.
+   Apply across all fields including question text, options, and markingGuide.
+   Use ₦ for Naira, never $.
+8. VARIETY: No two questions in the same set may test exactly the same
+   concept from the same angle. Spread across different aspects of the topic.
+9. NUMBERING: Questions are numbered 1 to N in the output array. Do not
+   include the number inside the "question" text field.
+10. WAEC/NECO ALIGNMENT:
+    For senior secondary classes (SS 1-3), question style must match the
+    format a student would see in WAEC or NECO examinations for this subject.
+    For junior secondary (JSS 1-3), match BECE style.
+
+OUTPUT FORMAT:
+Respond with ONLY valid JSON matching this exact shape — no preamble, no
+markdown fences, no commentary.
+
+For OBJECTIVE questions:
+{
+  "title": "string — e.g. 'JSS 2 Mathematics — Fractions Objective Test'",
+  "questionType": "objective",
+  "subject": "string",
+  "class": "string",
+  "topic": "string",
+  "duration": number | null,
+  "questions": [
+    {
+      "question": "string — question text only, no number prefix",
+      "options": { "A": "string", "B": "string", "C": "string", "D": "string" },
+      "answer": "A",
+      "difficulty": "easy"
+    }
+  ]
+}
+
+For THEORY questions:
+{
+  "title": "string",
+  "questionType": "theory",
+  "subject": "string",
+  "class": "string",
+  "topic": "string",
+  "duration": number | null,
+  "questions": [
+    {
+      "question": "string",
+      "marks": number,
+      "markingGuide": ["string", "string", "string"],
+      "difficulty": "easy"
+    }
+  ]
+}
+
+For ESSAY questions:
+{
+  "title": "string",
+  "questionType": "essay",
+  "subject": "string",
+  "class": "string",
+  "topic": "string",
+  "duration": number | null,
+  "questions": [
+    {
+      "question": "string",
+      "marks": number,
+      "expectedWordCount": number,
+      "markingGuide": {
+        "content": "string",
+        "organisation": "string",
+        "language": "string"
+      },
+      "difficulty": "easy"
+    }
+  ]
+}
+
+If you cannot generate JSON matching this shape, respond with:
+{"error": "string — brief reason"}`;
+
+// batch-3-phase-3a-question-builder
+function buildQuestionUserMessage({ classObj, subject, topic, questionType, count, difficulty, duration, markPerQuestion, session, additionalNotes }) {
+  const lines = [
+    `Generate ${count} ${difficulty} ${questionType} exam question(s) with the following details:`,
+    '',
+    `Class: ${classObj.name} (${classObj.level || 'level not specified'})`,
+    `Subject: ${subject.name}`,
+    `Topic: ${topic}`,
+    `Question type: ${questionType}`,
+    `Number of questions: ${count}`,
+    `Difficulty: ${difficulty}`,
+    `Duration: ${duration ? duration + ' minutes' : 'not specified'}`,
+    `Marks per question: ${markPerQuestion || 'not specified'}`,
+    `Term: ${session.currentTerm} (${session.name})`,
+  ];
+  if (additionalNotes && additionalNotes.trim()) {
+    lines.push('');
+    lines.push(`Teacher's notes: ${additionalNotes.trim()}`);
+  }
+  return lines.join('\n');
+}
+
+// batch-3-phase-3a-question-validator
+function isValidAssessment(obj, questionType) {
+  if (!obj || typeof obj !== 'object') return false;
+  if (typeof obj.title !== 'string' || !obj.title.trim()) return false;
+  if (!Array.isArray(obj.questions) || obj.questions.length === 0) return false;
+  for (const q of obj.questions) {
+    if (!q || typeof q !== 'object') return false;
+    if (typeof q.question !== 'string' || !q.question.trim()) return false;
+    if (questionType === 'objective') {
+      if (!q.options || typeof q.options !== 'object') return false;
+      if (!['A','B','C','D'].includes(q.answer)) return false;
+    }
+    if (questionType === 'theory') {
+      if (!Array.isArray(q.markingGuide) || q.markingGuide.length === 0) return false;
+    }
+    if (questionType === 'essay') {
+      if (!q.markingGuide || typeof q.markingGuide !== 'object') return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Generate exam questions.
+ * Throws same error-code surface as generateLessonNote / generateSchemeOfWork.
+ */
+async function generateExamQuestions(params) {
+  const userMessage = buildQuestionUserMessage(params);
+  const generatedAt = new Date().toISOString();
+
+  let result;
+  try {
+    result = await _callAnthropicWithSystem(QUESTION_SYSTEM_PROMPT, userMessage, QUESTION_MAX_TOKENS, TEMPERATURE);
+  } catch (err) {
+    if (err.code === 'NO_API_KEY') throw err;
+    throw classifyAnthropicError(err);
+  }
+
+  let text = stripFences(result.text);
+  console.error('[generateExamQuestions] first response:', {
+    stopReason:   result.stopReason,
+    inputTokens:  result.inputTokens,
+    outputTokens: result.outputTokens,
+    textLength:   text.length,
+    textPreview:  text.length > 500 ? text.slice(0, 250) + ' ... ' + text.slice(-250) : text,
+  });
+
+  if (text === 'I can only help with Nigerian school lesson planning.') {
+    const err = new Error('AI refused the request');
+    err.code = 'AI_REFUSED';
+    throw err;
+  }
+
+  if (result.stopReason === 'max_tokens') {
+    console.error('[generateExamQuestions] truncated at max_tokens:', { outputTokens: result.outputTokens });
+    const err = new Error('AI output truncated at max_tokens (' + result.outputTokens + ' tokens)');
+    err.code = 'AI_TRUNCATED';
+    throw err;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    let retry;
+    try {
+      retry = await _callAnthropicWithSystem(QUESTION_SYSTEM_PROMPT, userMessage, QUESTION_MAX_TOKENS, 0.2);
+    } catch (err) {
+      if (err.code === 'NO_API_KEY') throw err;
+      throw classifyAnthropicError(err);
+    }
+    text = stripFences(retry.text);
+    if (retry.stopReason === 'max_tokens') {
+      const err = new Error('AI output truncated on retry');
+      err.code = 'AI_TRUNCATED';
+      throw err;
+    }
+    try {
+      parsed = JSON.parse(text);
+    } catch (e2) {
+      const err = new Error('AI returned malformed JSON twice');
+      err.code = 'AI_MALFORMED';
+      throw err;
+    }
+    result.inputTokens  += retry.inputTokens;
+    result.outputTokens += retry.outputTokens;
+  }
+
+  if (parsed && typeof parsed === 'object' && typeof parsed.error === 'string') {
+    const err = new Error('AI returned error: ' + parsed.error);
+    err.code = 'AI_ERROR_OBJECT';
+    err.detail = parsed.error;
+    throw err;
+  }
+
+  if (!isValidAssessment(parsed, params.questionType)) {
+    console.error('[generateExamQuestions] AI_INVALID (no retry):', {
+      hasTitle:     typeof parsed?.title === 'string',
+      hasQuestions: Array.isArray(parsed?.questions),
+      count:        Array.isArray(parsed?.questions) ? parsed.questions.length : null,
+      topLevelKeys: parsed && typeof parsed === 'object' ? Object.keys(parsed) : null,
+    });
+    const err = new Error('AI output missing required fields');
+    err.code = 'AI_INVALID';
+    throw err;
+  }
+
+  return {
+    content:      parsed,
+    model:        ANTHROPIC_MODEL,
+    inputTokens:  result.inputTokens,
+    outputTokens: result.outputTokens,
+    generatedAt,
+  };
+}
+
 module.exports = {
   generateLessonNote,
   generateSchemeOfWork,
   ANTHROPIC_MODEL,
   // exported for testing
-  _internals: { SYSTEM_PROMPT, SCHEME_SYSTEM_PROMPT, buildSchemeUserMessage, isValidSchemeOfWork, buildUserMessage, stripFences, isValidLessonNote },
+  _internals: { SYSTEM_PROMPT, SCHEME_SYSTEM_PROMPT, buildSchemeUserMessage, isValidSchemeOfWork, buildUserMessage, stripFences, isValidLessonNote,
+  generateExamQuestions,
+},
 };

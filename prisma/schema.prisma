@@ -249,8 +249,10 @@ model Assessment {
   session   AcademicSession @relation(fields: [sessionId], references: [id])
 
   // NEW — used questions for this assessment, used by deduplication logic
-  usedQuestionIds Json? // Array of QuestionBankEntry ids
+  usedQuestionIds Json?
+  deletedAt    DateTime? // batch-3-phase-3a-assessment-deleted // Array of QuestionBankEntry ids
 
+  @@index([schoolId, deletedAt]) // batch-3-phase-3a-assessment-deleted-idx
   @@index([schoolId]) // NEW
   @@map("assessments")
 }
@@ -386,6 +388,11 @@ enum AcademicEventType {
   SCHEME_GENERATED
   SCHEME_EDITED
   SCHEME_DISCARDED
+
+  // batch-3-phase-3a-question-events
+  QUESTION_GENERATED
+  ASSESSMENT_EDITED
+  ASSESSMENT_DISCARDED
 }
 
 
