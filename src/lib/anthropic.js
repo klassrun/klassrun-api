@@ -908,6 +908,252 @@ async function generateExamQuestions(params) {
   };
 }
 
+
+// batch-3-phase-3c-end-of-term-generator
+// ───────────────────────────────────────────────────────────────────────────
+// End-of-Term Exam generation — Phase 3.3c.
+// Generates a combined paper: objective + theory + essay in one call.
+// ───────────────────────────────────────────────────────────────────────────
+
+const END_OF_TERM_MAX_TOKENS = 12000;
+
+// batch-3-phase-3c-end-of-term-prompt
+const END_OF_TERM_SYSTEM_PROMPT = `You are Klassrun, an AI assistant built exclusively for Nigerian school teachers.
+You generate complete end-of-term examination papers for Nigerian schools,
+aligned to the Nigerian curriculum (NERDC framework, WAEC and NECO standards
+for senior classes, BECE standards for junior classes).
+
+STRICT RULES:
+1. You ONLY generate exam papers for Nigerian schools. If asked to do anything
+   else, reply with exactly: "I can only help with Nigerian school lesson planning."
+2. Nigerian English spelling. Use Naira (₦) for monetary examples. Reference
+   Nigerian contexts (places, names, historical events) where natural.
+3. Age-appropriate: JSS 1-3 is ages 10-14. SS 1-3 is ages 14-18.
+4. Never include violence, discrimination, religious intolerance, or anything
+   inappropriate for a school examination paper.
+5. COVERAGE: Questions MUST be spread across ALL topics provided. Do not
+   concentrate questions on one or two topics. Distribute proportionally —
+   if 5 topics are given and 40 objective questions requested, aim for
+   8 questions per topic.
+6. OBJECTIVE RULES: Exactly 4 options (A, B, C, D). One unambiguous correct
+   answer. Plausible distractors — not obviously wrong. Answer field must be
+   exactly "A", "B", "C", or "D". Include which topic each question covers.
+7. THEORY RULES: Each question needs a markingGuide (3-5 bullet points a
+   marker would use to award marks). Include which topic each question covers.
+8. ESSAY RULES: Each question needs a markingGuide covering content (50%),
+   organisation (30%), and language (20%). Specify expected word count.
+   Include which topic each question covers.
+9. MATH NOTATION: All math in LaTeX — $...$ inline, $$...$$ block.
+   Plain-text math like "1/2", "x^2" is BANNED. Use ₦ for Naira, never $.
+10. WAEC/NECO ALIGNMENT: SS 1-3 must match WAEC/NECO exam style.
+    JSS 1-3 must match BECE style.
+11. If objectiveCount is 0, omit the "objective" section entirely.
+    If theoryCount is 0, omit the "theory" section entirely.
+    If essayCount is 0, omit the "essay" section entirely.
+    Only include sections that have questions.
+
+OUTPUT FORMAT — respond with ONLY valid JSON, no preamble, no markdown fences:
+
+{
+  "title": "string — e.g. 'JSS 2 Mathematics First Term Examination 2025/2026'",
+  "subject": "string",
+  "class": "string",
+  "term": "string",
+  "sessionName": "string",
+  "duration": number,
+  "totalMarks": number,
+  "topicsCovered": ["string"],
+  "sections": {
+    "objective": {
+      "instructions": "string — e.g. 'Answer ALL questions. Each correct answer = 1 mark.'",
+      "questions": [
+        {
+          "question": "string",
+          "options": { "A": "string", "B": "string", "C": "string", "D": "string" },
+          "answer": "A",
+          "topic": "string",
+          "difficulty": "easy"
+        }
+      ]
+    },
+    "theory": {
+      "instructions": "string — e.g. 'Answer ANY 3 questions. Each question = 10 marks.'",
+      "questions": [
+        {
+          "question": "string",
+          "marks": number,
+          "topic": "string",
+          "markingGuide": ["string"],
+          "difficulty": "easy"
+        }
+      ]
+    },
+    "essay": {
+      "instructions": "string",
+      "questions": [
+        {
+          "question": "string",
+          "marks": number,
+          "topic": "string",
+          "expectedWordCount": number,
+          "markingGuide": { "content": "string", "organisation": "string", "language": "string" },
+          "difficulty": "easy"
+        }
+      ]
+    }
+  }
+}
+
+If you cannot generate JSON matching this shape, respond with:
+{"error": "string — brief reason"}`;
+
+// batch-3-phase-3c-end-of-term-builder
+function buildEndOfTermUserMessage({ classObj, subject, topics, objectiveCount, theoryCount, essayCount, difficulty, duration, session, additionalNotes }) {
+  const lines = [
+    'Generate an end-of-term examination paper with the following details:',
+    '',
+    `Class: ${classObj.name} (${classObj.level || 'level not specified'})`,
+    `Subject: ${subject.name}`,
+    `Term: ${session.currentTerm} (${session.name})`,
+    `Duration: ${duration || 180} minutes`,
+    `Difficulty: ${difficulty || 'medium'}`,
+    '',
+    'Topics covered this term (spread questions across ALL of these):',
+  ];
+  topics.forEach((t, i) => lines.push(`  ${i + 1}. ${t}`));
+  lines.push('');
+  lines.push('Question breakdown:');
+  if (objectiveCount > 0) lines.push(`  Objective (MCQ): ${objectiveCount} questions`);
+  if (theoryCount > 0)    lines.push(`  Theory: ${theoryCount} questions`);
+  if (essayCount > 0)     lines.push(`  Essay: ${essayCount} questions`);
+  if (additionalNotes && additionalNotes.trim()) {
+    lines.push('');
+    lines.push(`Teacher's notes: ${additionalNotes.trim()}`);
+  }
+  return lines.join('\n');
+}
+
+// batch-3-phase-3c-end-of-term-validator
+function isValidEndOfTermExam(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  if (typeof obj.title !== 'string' || !obj.title.trim()) return false;
+  if (!obj.sections || typeof obj.sections !== 'object') return false;
+  // At least one section must be present
+  const { objective, theory, essay } = obj.sections;
+  const hasObjective = objective && Array.isArray(objective.questions) && objective.questions.length > 0;
+  const hasTheory    = theory    && Array.isArray(theory.questions)    && theory.questions.length > 0;
+  const hasEssay     = essay     && Array.isArray(essay.questions)     && essay.questions.length > 0;
+  if (!hasObjective && !hasTheory && !hasEssay) return false;
+  if (hasObjective) {
+    for (const q of objective.questions) {
+      if (!q.question || !q.options || !['A','B','C','D'].includes(q.answer)) return false;
+    }
+  }
+  if (hasTheory) {
+    for (const q of theory.questions) {
+      if (!q.question || !Array.isArray(q.markingGuide)) return false;
+    }
+  }
+  if (hasEssay) {
+    for (const q of essay.questions) {
+      if (!q.question || !q.markingGuide) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Generate a combined end-of-term exam paper.
+ * Throws same error-code surface as generateExamQuestions.
+ */
+async function generateEndOfTermExam(params) {
+  const userMessage = buildEndOfTermUserMessage(params);
+  const generatedAt = new Date().toISOString();
+
+  let result;
+  try {
+    result = await _callAnthropicWithSystem(END_OF_TERM_SYSTEM_PROMPT, userMessage, END_OF_TERM_MAX_TOKENS, TEMPERATURE);
+  } catch (err) {
+    if (err.code === 'NO_API_KEY') throw err;
+    throw classifyAnthropicError(err);
+  }
+
+  let text = stripFences(result.text);
+  console.error('[generateEndOfTermExam] first response:', {
+    stopReason:   result.stopReason,
+    inputTokens:  result.inputTokens,
+    outputTokens: result.outputTokens,
+    textLength:   text.length,
+    textPreview:  text.length > 500 ? text.slice(0, 250) + ' ... ' + text.slice(-250) : text,
+  });
+
+  if (text === 'I can only help with Nigerian school lesson planning.') {
+    const err = new Error('AI refused the request');
+    err.code = 'AI_REFUSED';
+    throw err;
+  }
+
+  if (result.stopReason === 'max_tokens') {
+    const err = new Error('AI output truncated at max_tokens (' + result.outputTokens + ' tokens)');
+    err.code = 'AI_TRUNCATED';
+    throw err;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    let retry;
+    try {
+      retry = await _callAnthropicWithSystem(END_OF_TERM_SYSTEM_PROMPT, userMessage, END_OF_TERM_MAX_TOKENS, 0.2);
+    } catch (err) {
+      if (err.code === 'NO_API_KEY') throw err;
+      throw classifyAnthropicError(err);
+    }
+    text = stripFences(retry.text);
+    if (retry.stopReason === 'max_tokens') {
+      const err = new Error('AI output truncated on retry');
+      err.code = 'AI_TRUNCATED';
+      throw err;
+    }
+    try {
+      parsed = JSON.parse(text);
+    } catch (e2) {
+      const err = new Error('AI returned malformed JSON twice');
+      err.code = 'AI_MALFORMED';
+      throw err;
+    }
+    result.inputTokens  += retry.inputTokens;
+    result.outputTokens += retry.outputTokens;
+  }
+
+  if (parsed && typeof parsed === 'object' && typeof parsed.error === 'string') {
+    const err = new Error('AI returned error: ' + parsed.error);
+    err.code = 'AI_ERROR_OBJECT';
+    err.detail = parsed.error;
+    throw err;
+  }
+
+  if (!isValidEndOfTermExam(parsed)) {
+    console.error('[generateEndOfTermExam] AI_INVALID (no retry):', {
+      hasTitle:    typeof parsed?.title === 'string',
+      hasSections: !!parsed?.sections,
+      topLevelKeys: parsed && typeof parsed === 'object' ? Object.keys(parsed) : null,
+    });
+    const err = new Error('AI output missing required fields');
+    err.code = 'AI_INVALID';
+    throw err;
+  }
+
+  return {
+    content:      parsed,
+    model:        ANTHROPIC_MODEL,
+    inputTokens:  result.inputTokens,
+    outputTokens: result.outputTokens,
+    generatedAt,
+  };
+}
+
 module.exports = {
   generateLessonNote,
   generateSchemeOfWork,
@@ -915,5 +1161,6 @@ module.exports = {
   // exported for testing
   _internals: { SYSTEM_PROMPT, SCHEME_SYSTEM_PROMPT, buildSchemeUserMessage, isValidSchemeOfWork, buildUserMessage, stripFences, isValidLessonNote,
   generateExamQuestions,
+  generateEndOfTermExam,
 },
 };

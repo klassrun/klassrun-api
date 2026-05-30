@@ -18,7 +18,7 @@ const { v4: uuidv4 } = require('uuid');
 const { authenticate, authorize } = require('../../middleware/auth');
 const prisma   = require('../../config/db');
 const { recordAcademicEvent } = require('../../lib/audit');
-const { generateExamQuestions, ANTHROPIC_MODEL } = require('../../lib/anthropic');
+const { generateExamQuestions, generateEndOfTermExam, ANTHROPIC_MODEL } = require('../../lib/anthropic');
 const { checkGenerationAllowed } = require('../../lib/billing-gate');
 
 const TOPIC_MIN      = 3;
@@ -232,6 +232,200 @@ router.post('/generate', authenticate, authorize('TEACHER'), async (req, res, ne
 // batch-3-phase-3b-bank-route
 // Returns paginated question bank entries for the school.
 // Both TEACHER and SCHOOL_ADMIN can browse the bank.
+// ── POST /api/assessments/generate-end-of-term ──────────────────────────────
+// batch-3-phase-3c-end-of-term-route
+router.post('/generate-end-of-term', authenticate, authorize('TEACHER'), async (req, res, next) => {
+  try {
+    const { classId, subjectId, topics, objectiveCount, theoryCount, essayCount, difficulty, duration, additionalNotes } = req.body || {};
+
+    if (typeof classId !== 'string' || !classId)
+      return res.status(400).json({ error: { message: 'classId is required', field: 'classId' } });
+    if (typeof subjectId !== 'string' || !subjectId)
+      return res.status(400).json({ error: { message: 'subjectId is required', field: 'subjectId' } });
+    if (!Array.isArray(topics) || topics.length === 0)
+      return res.status(400).json({ error: { message: 'topics must be a non-empty array', field: 'topics' } });
+    if (topics.length > 20)
+      return res.status(400).json({ error: { message: 'At most 20 topics allowed', field: 'topics' } });
+
+    const objCount  = Math.max(0, Math.min(60, Number(objectiveCount) || 40));
+    const thryCount = Math.max(0, Math.min(20, Number(theoryCount)    || 5));
+    const essCount  = Math.max(0, Math.min(10, Number(essayCount)     || 1));
+
+    if (objCount + thryCount + essCount === 0)
+      return res.status(400).json({ error: { message: 'At least one question type must have a count > 0' } });
+
+    const diffVal = ['easy','medium','hard'].includes(difficulty) ? difficulty : 'medium';
+    let durationVal = 180;
+    if (duration !== undefined && duration !== null && duration !== '') {
+      const d = Number(duration);
+      if (Number.isInteger(d) && d >= 1 && d <= 600) durationVal = d;
+    }
+
+    if (additionalNotes && typeof additionalNotes === 'string' && additionalNotes.length > 500)
+      return res.status(400).json({ error: { message: 'additionalNotes must be at most 500 characters', field: 'additionalNotes' } });
+
+    const gate = await checkGenerationAllowed(req.user.schoolId);
+    if (!gate.ok) return res.status(402).json({ error: { message: gate.message } });
+
+    const subject = await prisma.subject.findFirst({
+      where: { id: subjectId, schoolId: req.user.schoolId, archivedAt: null },
+      include: { class: { select: { id: true, name: true, level: true, archivedAt: true } } },
+    });
+    if (!subject) return res.status(404).json({ error: { message: 'Subject not found or archived' } });
+    if (!subject.class || subject.class.archivedAt)
+      return res.status(400).json({ error: { message: 'Parent class is archived' } });
+    if (subject.classId !== classId)
+      return res.status(400).json({ error: { message: 'Subject does not belong to this class', field: 'classId' } });
+    if (subject.teacherId !== req.user.id)
+      return res.status(403).json({ error: { message: 'You are not assigned to this subject' } });
+
+    const session = await prisma.academicSession.findFirst({
+      where: { schoolId: req.user.schoolId, isCurrent: true },
+    });
+    if (!session)
+      return res.status(400).json({ error: { message: 'No current academic session. Ask your admin to set one.' } });
+
+    let aiResult;
+    try {
+      aiResult = await generateEndOfTermExam({
+        classObj:       { name: subject.class.name, level: subject.class.level },
+        subject:        { name: subject.name },
+        topics:         topics.map(t => String(t).trim()).filter(Boolean),
+        objectiveCount: objCount,
+        theoryCount:    thryCount,
+        essayCount:     essCount,
+        difficulty:     diffVal,
+        duration:       durationVal,
+        session:        { name: session.name, currentTerm: session.currentTerm },
+        additionalNotes,
+      });
+    } catch (err) {
+      if (err.code === 'NO_API_KEY') { console.error('[POST /generate-end-of-term] ANTHROPIC_API_KEY missing'); return res.status(503).json({ error: { message: 'AI service is not configured. Contact support.' } }); }
+      if (err.code === 'AI_REFUSED')    return res.status(422).json({ error: { message: 'The AI declined this request. Try adjusting your topics.' } });
+      if (err.code === 'AI_ERROR_OBJECT') return res.status(422).json({ error: { message: err.detail || 'AI could not generate this exam.' } });
+      if (err.code === 'AI_TRANSIENT')  return res.status(503).json({ error: { message: 'AI service is busy. Please try again in a minute.' } });
+      if (err.code === 'AI_PERMANENT')  { console.error('[POST /generate-end-of-term] AI_PERMANENT:', err.message); return res.status(503).json({ error: { message: 'AI service misconfigured. Contact support.' } }); }
+      if (err.code === 'AI_TRUNCATED')  return res.status(422).json({ error: { message: 'AI ran out of space. Try fewer topics or fewer questions.' } });
+      if (err.code === 'AI_MALFORMED' || err.code === 'AI_INVALID') return res.status(503).json({ error: { message: 'AI returned unusable response. Please try again.' } });
+      console.error('[POST /generate-end-of-term] unexpected:', { code: err?.code, message: err?.message });
+      return res.status(503).json({ error: { message: 'AI service temporarily unavailable. Please try again.' } });
+    }
+
+    const termLabel = (t) => t==='FIRST'?'Term 1':t==='SECOND'?'Term 2':t==='THIRD'?'Term 3':String(t);
+    const sessionStamp = `${session.name} · ${termLabel(session.currentTerm)}`;
+    const totalMarks   = aiResult.content.totalMarks || (objCount + thryCount * 10 + essCount * 20);
+
+    const contentWithMeta = {
+      ...aiResult.content,
+      questionType: 'end_of_term',
+      _metadata: { model: aiResult.model, inputTokens: aiResult.inputTokens, outputTokens: aiResult.outputTokens, generatedAt: aiResult.generatedAt },
+    };
+
+    const assessment = await prisma.assessment.create({
+      data: {
+        title:        aiResult.content.title,
+        questions:    contentWithMeta,
+        totalMarks,
+        duration:     durationVal,
+        sessionStamp,
+        schoolId:     req.user.schoolId,
+        teacherId:    req.user.id,
+        classId:      subject.classId,
+        subjectId:    subject.id,
+        sessionId:    session.id,
+      },
+    });
+
+    // Save all questions to bank (UUID fingerprint — no dedup)
+    // batch-3-phase-3c-eot-bank-save
+    const sections = aiResult.content.sections || {};
+    const allQs = [
+      ...(sections.objective?.questions || []).map(q => ({ ...q, qType: 'objective' })),
+      ...(sections.theory?.questions    || []).map(q => ({ ...q, qType: 'theory' })),
+      ...(sections.essay?.questions     || []).map(q => ({ ...q, qType: 'essay' })),
+    ];
+    await Promise.all(allQs.map(q =>
+      prisma.questionBankEntry.create({
+        data: {
+          question:     q.question,
+          options:      q.options || null,
+          answer:       q.answer  || null,
+          questionType: q.qType,
+          difficulty:   q.difficulty || diffVal,
+          topic:        q.topic || topics[0] || subject.name,
+          fingerprint:  require('uuid').v4(),
+          waecAligned:  false,
+          schoolId:     req.user.schoolId,
+          subjectId:    subject.id,
+        },
+      }).catch(e => console.error('[bank-save-eot] failed:', e.message))
+    ));
+
+    recordAcademicEvent('QUESTION_GENERATED', {
+      schoolId: req.user.schoolId,
+      actorId:  req.user.id,
+      metadata: { assessmentId: assessment.id, subjectId: subject.id, classId: subject.classId, questionType: 'end_of_term', topicsCount: topics.length, model: aiResult.model, inputTokens: aiResult.inputTokens, outputTokens: aiResult.outputTokens },
+    });
+
+    return res.status(201).json({
+      assessment: { ...assessment, subject: { id: subject.id, name: subject.name }, class: { id: subject.class.id, name: subject.class.name, level: subject.class.level } },
+    });
+  } catch (err) { next(err); }
+});
+
+// ── GET /api/assessments/topics ─────────────────────────────────────────────
+// batch-3-phase-3c-topics-route
+// Returns distinct topics from the teacher's lesson notes for a given subject
+// in the current session. Used to pre-populate the end-of-term exam form.
+router.get('/topics', authenticate, authorize('TEACHER'), async (req, res, next) => {
+  try {
+    const { subjectId, sessionId } = req.query;
+
+    if (!subjectId || typeof subjectId !== 'string') {
+      return res.status(400).json({ error: { message: 'subjectId is required', field: 'subjectId' } });
+    }
+
+    // Verify teacher is assigned to this subject
+    const subject = await prisma.subject.findFirst({
+      where: { id: subjectId, schoolId: req.user.schoolId, archivedAt: null, teacherId: req.user.id },
+    });
+    if (!subject) {
+      return res.status(404).json({ error: { message: 'Subject not found or not assigned to you' } });
+    }
+
+    const where = {
+      schoolId:  req.user.schoolId,
+      teacherId: req.user.id,
+      subjectId,
+      deletedAt: null,
+    };
+    if (sessionId && typeof sessionId === 'string') {
+      where.sessionId = sessionId;
+    }
+
+    const notes = await prisma.lessonNote.findMany({
+      where,
+      select: { topic: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    // Deduplicate while preserving order
+    const seen = new Set();
+    const topics = [];
+    for (const n of notes) {
+      const t = n.topic.trim();
+      if (t && !seen.has(t.toLowerCase())) {
+        seen.add(t.toLowerCase());
+        topics.push(t);
+      }
+    }
+
+    res.json({ topics });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/bank', authenticate, async (req, res, next) => {
   try {
     const where = { schoolId: req.user.schoolId };
