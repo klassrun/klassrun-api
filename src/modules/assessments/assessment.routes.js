@@ -228,6 +228,43 @@ router.post('/generate', authenticate, authorize('TEACHER'), async (req, res, ne
 });
 
 // ── GET /api/assessments ─────────────────────────────────────────────────────
+// ── GET /api/assessments/bank ───────────────────────────────────────────────
+// batch-3-phase-3b-bank-route
+// Returns paginated question bank entries for the school.
+// Both TEACHER and SCHOOL_ADMIN can browse the bank.
+router.get('/bank', authenticate, async (req, res, next) => {
+  try {
+    const where = { schoolId: req.user.schoolId };
+
+    // Optional filters
+    if (req.query.subjectId) where.subjectId = String(req.query.subjectId);
+    if (req.query.topic && String(req.query.topic).trim()) {
+      where.topic = { contains: String(req.query.topic).trim(), mode: 'insensitive' };
+    }
+    if (req.query.questionType) where.questionType = String(req.query.questionType);
+
+    const limit  = Math.min(Number(req.query.limit)  || 50, 100);
+    const offset = Math.max(Number(req.query.offset) || 0,  0);
+
+    const [entries, total] = await Promise.all([
+      prisma.questionBankEntry.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take:    limit,
+        skip:    offset,
+        include: {
+          subject: { select: { id: true, name: true } },
+        },
+      }),
+      prisma.questionBankEntry.count({ where }),
+    ]);
+
+    res.json({ entries, total });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/', authenticate, async (req, res, next) => {
   try {
     const where = { schoolId: req.user.schoolId, deletedAt: null };
