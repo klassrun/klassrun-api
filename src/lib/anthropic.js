@@ -1157,10 +1157,17 @@ async function generateEndOfTermExam(params) {
 module.exports = {
   generateLessonNote,
   generateSchemeOfWork,
-  ANTHROPIC_MODEL,
-  // exported for testing
-  _internals: { SYSTEM_PROMPT, SCHEME_SYSTEM_PROMPT, buildSchemeUserMessage, isValidSchemeOfWork, buildUserMessage, stripFences, isValidLessonNote,
   generateExamQuestions,
   generateEndOfTermExam,
-},
+  ANTHROPIC_MODEL,
+  // exported for testing — hotfix-batch-3-export-generators
+  _internals: {
+    SYSTEM_PROMPT,
+    SCHEME_SYSTEM_PROMPT,
+    buildSchemeUserMessage,
+    isValidSchemeOfWork,
+    buildUserMessage,
+    stripFences,
+    isValidLessonNote,
+  },
 };
