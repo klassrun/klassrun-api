@@ -19,6 +19,7 @@ const { authenticate, authorize } = require('../../middleware/auth');
 const prisma   = require('../../config/db');
 const { recordAcademicEvent } = require('../../lib/audit');
 const { generateExamQuestions, generateEndOfTermExam, ANTHROPIC_MODEL } = require('../../lib/anthropic');
+const { normalizeSubject, normalizeClass, normalizeTerm, buildContextBlock } = require('../../lib/curriculum-context'); // batch-3-phase-3d-curriculum-require
 const { checkGenerationAllowed } = require('../../lib/billing-gate');
 
 const TOPIC_MIN      = 3;
@@ -114,7 +115,23 @@ router.post('/generate', authenticate, authorize('TEACHER'), async (req, res, ne
     // Call AI
     let aiResult;
     try {
+      // batch-3-phase-3d-curriculum-lookup
+      let curriculumContext = null;
+      try {
+        const _curRows = await prisma.curriculumTopic.findMany({
+          where: {
+            subject:   normalizeSubject(subject.name),
+            className: normalizeClass(subject.class.name),
+            term:      normalizeTerm(session.currentTerm),
+          },
+          orderBy: { week: 'asc' },
+        });
+        curriculumContext = buildContextBlock({ rows: _curRows, mode: 'practice', topic: topic.trim() });
+      } catch (_curErr) {
+        console.error('[curriculum] lookup non-fatal:', _curErr.message);
+      }
       aiResult = await generateExamQuestions({
+        curriculumContext,
         classObj:       { name: subject.class.name, level: subject.class.level },
         subject:        { name: subject.name },
         topic:          topic.trim(),
@@ -287,7 +304,23 @@ router.post('/generate-end-of-term', authenticate, authorize('TEACHER'), async (
 
     let aiResult;
     try {
+      // batch-3-phase-3d-curriculum-lookup
+      let curriculumContext = null;
+      try {
+        const _curRows = await prisma.curriculumTopic.findMany({
+          where: {
+            subject:   normalizeSubject(subject.name),
+            className: normalizeClass(subject.class.name),
+            term:      normalizeTerm(session.currentTerm),
+          },
+          orderBy: { week: 'asc' },
+        });
+        curriculumContext = buildContextBlock({ rows: _curRows, mode: 'term' });
+      } catch (_curErr) {
+        console.error('[curriculum] lookup non-fatal:', _curErr.message);
+      }
       aiResult = await generateEndOfTermExam({
+        curriculumContext,
         classObj:       { name: subject.class.name, level: subject.class.level },
         subject:        { name: subject.name },
         topics:         topics.map(t => String(t).trim()).filter(Boolean),

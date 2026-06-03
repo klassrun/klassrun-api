@@ -144,7 +144,7 @@ function getClient() {
   return _client;
 }
 
-function buildUserMessage({ classObj, subject, topic, week, duration, session, additionalNotes, subTopics }) {
+function buildUserMessage({ classObj, subject, topic, week, duration, session, additionalNotes, subTopics, curriculumContext }) {
   // batch-3-phase-1-5-subtopics-builder
   const lines = [
     'Generate a lesson note with the following details:',
@@ -164,6 +164,11 @@ function buildUserMessage({ classObj, subject, topic, week, duration, session, a
   if (additionalNotes && additionalNotes.trim()) {
     lines.push('');
     lines.push(`Teacher's notes: ${additionalNotes.trim()}`);
+  }
+  // batch-3-phase-3d-curric-lesson-builder
+  if (curriculumContext && curriculumContext.trim()) {
+    lines.push('');
+    lines.push(curriculumContext.trim());
   }
   return lines.join('\n');
 }
@@ -500,7 +505,7 @@ If you cannot generate JSON matching this shape, respond with:
 {"error": "string — brief reason"}`;
 
 // batch-3-phase-2-scheme-builder
-function buildSchemeUserMessage({ classObj, subject, session, weekCount, topics, additionalNotes }) {
+function buildSchemeUserMessage({ classObj, subject, session, weekCount, topics, additionalNotes, curriculumContext }) {
   const lines = [
     'Generate a scheme of work with the following details:',
     '',
@@ -517,6 +522,11 @@ function buildSchemeUserMessage({ classObj, subject, session, weekCount, topics,
   if (additionalNotes && additionalNotes.trim()) {
     lines.push('');
     lines.push(`Teacher's notes: ${additionalNotes.trim()}`);
+  }
+  // batch-3-phase-3d-curric-scheme-builder
+  if (curriculumContext && curriculumContext.trim()) {
+    lines.push('');
+    lines.push(curriculumContext.trim());
   }
   return lines.join('\n');
 }
@@ -771,7 +781,7 @@ If you cannot generate JSON matching this shape, respond with:
 {"error": "string — brief reason"}`;
 
 // batch-3-phase-3a-question-builder
-function buildQuestionUserMessage({ classObj, subject, topic, questionType, count, difficulty, duration, markPerQuestion, session, additionalNotes }) {
+function buildQuestionUserMessage({ classObj, subject, topic, questionType, count, difficulty, duration, markPerQuestion, session, additionalNotes, curriculumContext }) {
   const lines = [
     `Generate ${count} ${difficulty} ${questionType} exam question(s) with the following details:`,
     '',
@@ -788,6 +798,11 @@ function buildQuestionUserMessage({ classObj, subject, topic, questionType, coun
   if (additionalNotes && additionalNotes.trim()) {
     lines.push('');
     lines.push(`Teacher's notes: ${additionalNotes.trim()}`);
+  }
+  // batch-3-phase-3d-curric-question-builder
+  if (curriculumContext && curriculumContext.trim()) {
+    lines.push('');
+    lines.push(curriculumContext.trim());
   }
   return lines.join('\n');
 }
@@ -1008,7 +1023,7 @@ If you cannot generate JSON matching this shape, respond with:
 {"error": "string — brief reason"}`;
 
 // batch-3-phase-3c-end-of-term-builder
-function buildEndOfTermUserMessage({ classObj, subject, topics, objectiveCount, theoryCount, essayCount, difficulty, duration, session, additionalNotes }) {
+function buildEndOfTermUserMessage({ classObj, subject, topics, objectiveCount, theoryCount, essayCount, difficulty, duration, session, additionalNotes, curriculumContext }) {
   const lines = [
     'Generate an end-of-term examination paper with the following details:',
     '',
@@ -1029,6 +1044,11 @@ function buildEndOfTermUserMessage({ classObj, subject, topics, objectiveCount, 
   if (additionalNotes && additionalNotes.trim()) {
     lines.push('');
     lines.push(`Teacher's notes: ${additionalNotes.trim()}`);
+  }
+  // batch-3-phase-3d-curric-eot-builder
+  if (curriculumContext && curriculumContext.trim()) {
+    lines.push('');
+    lines.push(curriculumContext.trim());
   }
   return lines.join('\n');
 }

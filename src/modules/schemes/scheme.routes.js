@@ -18,6 +18,7 @@ const { authenticate, authorize } = require('../../middleware/auth');
 const prisma = require('../../config/db');
 const { recordAcademicEvent } = require('../../lib/audit');
 const { generateSchemeOfWork, ANTHROPIC_MODEL } = require('../../lib/anthropic');
+const { normalizeSubject, normalizeClass, normalizeTerm, buildContextBlock } = require('../../lib/curriculum-context'); // batch-3-phase-3d-curriculum-require
 const { checkGenerationAllowed } = require('../../lib/billing-gate');
 
 const NOTES_MAX           = 500;
@@ -143,7 +144,23 @@ router.post('/generate', authenticate, authorize('TEACHER'), async (req, res, ne
     // Call AI
     let aiResult;
     try {
+      // batch-3-phase-3d-curriculum-lookup
+      let curriculumContext = null;
+      try {
+        const _curRows = await prisma.curriculumTopic.findMany({
+          where: {
+            subject:   normalizeSubject(subject.name),
+            className: normalizeClass(subject.class.name),
+            term:      normalizeTerm(session.currentTerm),
+          },
+          orderBy: { week: 'asc' },
+        });
+        curriculumContext = buildContextBlock({ rows: _curRows, mode: 'term' });
+      } catch (_curErr) {
+        console.error('[curriculum] lookup non-fatal:', _curErr.message);
+      }
       aiResult = await generateSchemeOfWork({
+        curriculumContext,
         classObj:        { name: subject.class.name, level: subject.class.level },
         subject:         { name: subject.name },
         session:         { name: session.name, currentTerm: session.currentTerm },
