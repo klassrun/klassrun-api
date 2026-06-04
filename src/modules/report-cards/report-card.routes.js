@@ -52,6 +52,24 @@ function rankByDesc(items) {
 
 const EMPTY_BEHAVIOUR = BEHAVIOUR_ATTRS.map((attribute) => ({ attribute, score: null }));
 
+// ops-2-generate-fold helpers — turn stored records into snapshot sections.
+function behaviourFromRecord(rec) {
+  if (!rec || !rec.ratings || typeof rec.ratings !== 'object') return EMPTY_BEHAVIOUR;
+  return BEHAVIOUR_ATTRS.map((attribute) => {
+    const v = rec.ratings[attribute];
+    const score = Number.isInteger(v) && v >= 1 && v <= 5 ? v : null;
+    return { attribute, score };
+  });
+}
+function attendanceFromRecord(rec) {
+  if (!rec) return { schoolOpened: null, present: null, absent: null };
+  return { schoolOpened: rec.schoolOpened, present: rec.present, absent: rec.absent };
+}
+function commentsFromRecord(rec) {
+  if (!rec) return { classTeacher: null, principal: null };
+  return { classTeacher: rec.classTeacher || null, principal: rec.principal || null };
+}
+
 // ── POST /generate ──────────────────────────────────────────────────────────
 router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
   try {
@@ -120,6 +138,16 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), async (req, re
     const aggById = {};
     aggregates.forEach((a) => { aggById[a.id] = a; });
 
+    // ops-2-generate-fold: pull attendance / behaviour / comments for this class+session+term
+    const [attendanceRecords, behaviourRecords, commentRecords] = await Promise.all([
+      prisma.attendanceRecord.findMany({ where: { schoolId: req.user.schoolId, sessionId: session.id, term, studentId: { in: studentIds } } }),
+      prisma.behaviourRecord.findMany({ where: { schoolId: req.user.schoolId, sessionId: session.id, term, studentId: { in: studentIds } } }),
+      prisma.reportCardComment.findMany({ where: { schoolId: req.user.schoolId, sessionId: session.id, term, studentId: { in: studentIds } } }),
+    ]);
+    const attById = {}; attendanceRecords.forEach((a) => { attById[a.studentId] = a; });
+    const behById = {}; behaviourRecords.forEach((b) => { behById[b.studentId] = b; });
+    const comById = {}; commentRecords.forEach((c) => { comById[c.studentId] = c; });
+
     const classSize = students.length;
     const generatedAt = new Date();
 
@@ -166,12 +194,21 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), async (req, re
           classSize,
           cumulativeAverage: null, // Ops 2/3 (cross-term)
         },
-        attendance: { schoolOpened: null, present: null, absent: null }, // Ops 2
-        behaviour: EMPTY_BEHAVIOUR,                                       // Ops 2
-        comments: { classTeacher: null, principal: null },               // Ops 2 (AI)
+        attendance: attendanceFromRecord(attById[s.id]), // ops-2-generate-fold
+        behaviour: behaviourFromRecord(behById[s.id]),    // ops-2-generate-fold
+        comments: commentsFromRecord(comById[s.id]),      // ops-2-generate-fold
         resumptionDate: null,
       };
 
+      // ops-2-generate-fold: never overwrite a finalized (locked) card
+      const existingCard = await prisma.reportCard.findUnique({
+        where: { studentId_sessionId_term: { studentId: s.id, sessionId: session.id, term } },
+        select: { id: true, studentId: true, term: true, pdfUrl: true, lockedAt: true, snapshot: true },
+      });
+      if (existingCard && existingCard.lockedAt) {
+        saved.push(existingCard);
+        continue;
+      }
       const card = await prisma.reportCard.upsert({
         where: {
           studentId_sessionId_term: { studentId: s.id, sessionId: session.id, term },

@@ -87,6 +87,9 @@ model School {
   students      Student[]
   resultEntries ResultEntry[]
   reportCards   ReportCard[] // ops-1-rel-school
+  attendanceRecords  AttendanceRecord[] // ops-2-rel-school
+  behaviourRecords   BehaviourRecord[] // ops-2-rel-school
+  reportCardComments ReportCardComment[] // ops-2-rel-school
   @@map("schools")
 }
 
@@ -143,6 +146,9 @@ model AcademicSession {
 
   resultEntries ResultEntry[]
   reportCards   ReportCard[] // ops-1-rel-session
+  attendanceRecords  AttendanceRecord[] // ops-2-rel-session
+  behaviourRecords   BehaviourRecord[] // ops-2-rel-session
+  reportCardComments ReportCardComment[] // ops-2-rel-session
   @@map("academic_sessions")
 }
 
@@ -409,6 +415,11 @@ enum AcademicEventType {
   RESULT_ENTERED
   REPORT_CARD_GENERATED
   REPORT_CARD_LOCKED
+  // ops-2-academic-events
+  ATTENDANCE_RECORDED
+  BEHAVIOUR_RECORDED
+  REPORT_CARD_COMMENT_GENERATED
+  REPORT_CARD_COMMENT_EDITED
 }
 
 
@@ -518,6 +529,9 @@ model Student {
 
   results     ResultEntry[]
   reportCards ReportCard[]
+  attendanceRecords  AttendanceRecord[] // ops-2-rel-student
+  behaviourRecords   BehaviourRecord[] // ops-2-rel-student
+  reportCardComments ReportCardComment[] // ops-2-rel-student
 
   archivedAt DateTime?
   createdAt  DateTime  @default(now())
@@ -581,4 +595,81 @@ model ReportCard {
   @@index([schoolId])
   @@index([schoolId, sessionId, term])
   @@map("report_cards")
+}
+
+
+// ════════════════════════════════════════════════════════════════════════════
+//  OPERATIONS 2 — Attendance + Behaviour + Report-card comments
+// ════════════════════════════════════════════════════════════════════════════
+// ops-2-models
+model AttendanceRecord {
+  id           String      @id @default(uuid())
+  term         SessionTerm
+  schoolOpened Int         @default(0)
+  present      Int         @default(0)
+  absent       Int         @default(0)
+
+  schoolId    String
+  school      School          @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  studentId   String
+  student     Student         @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  sessionId   String
+  session     AcademicSession @relation(fields: [sessionId], references: [id])
+  enteredById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([studentId, sessionId, term])
+  @@index([schoolId])
+  @@index([schoolId, sessionId, term])
+  @@map("attendance_records")
+}
+
+model BehaviourRecord {
+  id      String      @id @default(uuid())
+  term    SessionTerm
+  ratings Json
+
+  schoolId    String
+  school      School          @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  studentId   String
+  student     Student         @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  sessionId   String
+  session     AcademicSession @relation(fields: [sessionId], references: [id])
+  enteredById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([studentId, sessionId, term])
+  @@index([schoolId])
+  @@index([schoolId, sessionId, term])
+  @@map("behaviour_records")
+}
+
+model ReportCardComment {
+  id            String      @id @default(uuid())
+  term          SessionTerm
+  classTeacher  String?
+  principal     String?
+  source        String      @default("ai")
+  aiModel       String?
+  aiGeneratedAt DateTime?
+
+  schoolId      String
+  school        School          @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  studentId     String
+  student       Student         @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  sessionId     String
+  session       AcademicSession @relation(fields: [sessionId], references: [id])
+  generatedById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([studentId, sessionId, term])
+  @@index([schoolId])
+  @@index([schoolId, sessionId, term])
+  @@map("report_card_comments")
 }

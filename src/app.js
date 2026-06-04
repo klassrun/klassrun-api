@@ -18,6 +18,9 @@ const subjectRoutes    = require('./modules/subjects/subject.routes'); // batch-
 const studentRoutes    = require('./modules/students/student.routes'); // ops-1-routes-mount
 const resultRoutes     = require('./modules/results/result.routes'); // ops-1-routes-mount
 const reportCardRoutes = require('./modules/report-cards/report-card.routes'); // ops-1-routes-mount
+const attendanceRoutes        = require('./modules/attendance/attendance.routes'); // ops-2-routes-mount
+const behaviourRoutes         = require('./modules/behaviour/behaviour.routes'); // ops-2-routes-mount
+const reportCardCommentRoutes = require('./modules/report-card-comments/report-card-comments.routes'); // ops-2-routes-mount
 
 
 const app = express();
@@ -92,6 +95,9 @@ app.use('/api/classes/:classId/subjects', subjectRoutes); // batch-2c-phase-3a-s
 app.use('/api/subjects', subjectRoutes);
 app.use('/api/students',     studentRoutes); // ops-1-routes-mount
 app.use('/api/results',      resultRoutes); // ops-1-routes-mount
+app.use('/api/attendance',            attendanceRoutes); // ops-2-routes-mount
+app.use('/api/behaviour',             behaviourRoutes); // ops-2-routes-mount
+app.use('/api/report-cards/comments', reportCardCommentRoutes); // ops-2-routes-mount (must precede /api/report-cards)
 app.use('/api/report-cards', reportCardRoutes); // ops-1-routes-mount
 
 // ── ERROR HANDLER ───────────────────────────────────────────────────────────

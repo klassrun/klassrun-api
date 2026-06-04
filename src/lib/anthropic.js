@@ -1174,11 +1174,168 @@ async function generateEndOfTermExam(params) {
   };
 }
 
+
+// ops-2-comment-generator
+// ───────────────────────────────────────────────────────────────────────────
+// Report-card comments — Operations 2.
+// Reuses _callAnthropicWithSystem, ANTHROPIC_MODEL, TEMPERATURE, stripFences,
+// classifyAnthropicError. One Anthropic call returns BOTH comments.
+// ───────────────────────────────────────────────────────────────────────────
+
+const COMMENT_MAX_TOKENS = 1500;
+
+const COMMENT_SYSTEM_PROMPT = `You are Klassrun, an AI assistant built exclusively for Nigerian school teachers and principals.
+You write brief, professional end-of-term report-card comments for a SINGLE student,
+grounded ONLY in the performance data provided.
+
+STRICT RULES:
+1. You ONLY write report-card comments for Nigerian schools. If asked to do anything
+   else, reply with exactly: "I can only help with Nigerian school lesson planning."
+2. Nigerian English spelling and tone. Warm, professional, encouraging — the voice a
+   Nigerian class teacher and principal would use on a termly report card.
+3. Ground EVERY statement in the data provided (average, per-subject grades,
+   attendance, behaviour). NEVER invent facts, scores, events, or specifics not in
+   the data. Do not name subjects that are not listed. Do not state a position/rank
+   unless it is given.
+4. Be specific and constructive: acknowledge a concrete strength, name a concrete
+   area to improve, and give a forward-looking encouragement for the new term. Avoid
+   empty filler ("keep it up", "well done") with nothing behind it.
+5. Two comments:
+   - "classTeacher": 2-3 sentences about the student in the third person, referencing
+     concrete performance (e.g. strongest and weakest subject, overall average).
+   - "principal": 1-2 sentences, a higher-level endorsement or charge for next term.
+6. Never include content promoting violence, discrimination, religious intolerance,
+   or anything inappropriate. Be honest but never harsh or demeaning about a
+   struggling student.
+7. If no results are provided, write a short neutral comment noting results are
+   pending; do NOT invent performance.
+
+OUTPUT FORMAT — respond with ONLY valid JSON, no preamble, no markdown fences:
+{ "classTeacher": "string", "principal": "string" }
+
+If you cannot generate JSON matching this shape, respond with:
+{"error": "string — brief reason"}`;
+
+function buildCommentUserMessage(params) {
+  const { student, session, term, summary, subjects, attendance, behaviour } = params || {};
+  const lines = [
+    'Write report-card comments for this student, grounded only in the data below:',
+    '',
+    `Student: ${(student && student.fullName) || 'Student'}`,
+    `Class: ${(student && student.class) || 'not specified'}`,
+    `Term: ${term} (${session})`,
+  ];
+  if (summary) {
+    lines.push(`Subjects offered: ${summary.subjectsCount}`);
+    lines.push(`Average score: ${summary.average} (each subject is out of 100)`);
+  }
+  if (Array.isArray(subjects) && subjects.length > 0) {
+    lines.push('');
+    lines.push('Per-subject results:');
+    subjects.forEach((s) => lines.push(`  - ${s.name}: ${s.total}/100, grade ${s.grade} (${s.remark})`));
+  } else {
+    lines.push('');
+    lines.push('No subject results have been recorded for this student this term.');
+  }
+  if (attendance && attendance.schoolOpened != null) {
+    lines.push('');
+    lines.push(`Attendance: present ${attendance.present} of ${attendance.schoolOpened} days the school opened; absent ${attendance.absent}.`);
+  }
+  if (Array.isArray(behaviour) && behaviour.some((b) => b && b.score != null)) {
+    lines.push('');
+    lines.push('Behaviour ratings (1-5):');
+    behaviour.forEach((b) => { if (b && b.score != null) lines.push(`  - ${b.attribute}: ${b.score}`); });
+  }
+  return lines.join('\n');
+}
+
+function isValidComment(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  if (typeof obj.classTeacher !== 'string' || !obj.classTeacher.trim()) return false;
+  if (typeof obj.principal !== 'string' || !obj.principal.trim()) return false;
+  return true;
+}
+
+/**
+ * Generate class-teacher + principal report-card comments for one student.
+ * Throws the same error-code surface as the other generators:
+ *   NO_API_KEY · AI_REFUSED · AI_ERROR_OBJECT · AI_TRUNCATED
+ *   AI_TRANSIENT · AI_PERMANENT · AI_API_ERROR · AI_MALFORMED · AI_INVALID
+ */
+async function generateReportCardComments(params) {
+  const userMessage = buildCommentUserMessage(params);
+  const generatedAt = new Date().toISOString();
+
+  let result;
+  try {
+    result = await _callAnthropicWithSystem(COMMENT_SYSTEM_PROMPT, userMessage, COMMENT_MAX_TOKENS, TEMPERATURE);
+  } catch (err) {
+    if (err.code === 'NO_API_KEY') throw err;
+    throw classifyAnthropicError(err);
+  }
+
+  let text = stripFences(result.text);
+  console.error('[generateReportCardComments] first response:', {
+    stopReason: result.stopReason, outputTokens: result.outputTokens, textLength: text.length,
+  });
+
+  if (text === 'I can only help with Nigerian school lesson planning.') {
+    const err = new Error('AI refused the request'); err.code = 'AI_REFUSED'; throw err;
+  }
+  if (result.stopReason === 'max_tokens') {
+    const err = new Error('AI output truncated at max_tokens (' + result.outputTokens + ' tokens)');
+    err.code = 'AI_TRUNCATED'; throw err;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    let retry;
+    try {
+      retry = await _callAnthropicWithSystem(COMMENT_SYSTEM_PROMPT, userMessage, COMMENT_MAX_TOKENS, 0.2);
+    } catch (err) {
+      if (err.code === 'NO_API_KEY') throw err;
+      throw classifyAnthropicError(err);
+    }
+    text = stripFences(retry.text);
+    if (retry.stopReason === 'max_tokens') {
+      const err = new Error('AI output truncated on retry'); err.code = 'AI_TRUNCATED'; throw err;
+    }
+    try {
+      parsed = JSON.parse(text);
+    } catch (e2) {
+      const err = new Error('AI returned malformed JSON twice'); err.code = 'AI_MALFORMED'; throw err;
+    }
+    result.inputTokens += retry.inputTokens;
+    result.outputTokens += retry.outputTokens;
+  }
+
+  if (parsed && typeof parsed === 'object' && typeof parsed.error === 'string') {
+    const err = new Error('AI returned error: ' + parsed.error);
+    err.code = 'AI_ERROR_OBJECT'; err.detail = parsed.error; throw err;
+  }
+  if (!isValidComment(parsed)) {
+    console.error('[generateReportCardComments] AI_INVALID:', { topLevelKeys: parsed && typeof parsed === 'object' ? Object.keys(parsed) : null });
+    const err = new Error('AI output missing required fields'); err.code = 'AI_INVALID'; throw err;
+  }
+
+  return {
+    content: parsed,
+    model: ANTHROPIC_MODEL,
+    inputTokens: result.inputTokens,
+    outputTokens: result.outputTokens,
+    generatedAt,
+  };
+}
+
+
 module.exports = {
   generateLessonNote,
   generateSchemeOfWork,
   generateExamQuestions,
   generateEndOfTermExam,
+  generateReportCardComments,
   ANTHROPIC_MODEL,
   // exported for testing — hotfix-batch-3-export-generators
   _internals: {
