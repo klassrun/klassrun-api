@@ -52,7 +52,41 @@ function generateLogoUploadSignature({ schoolId }) {
   };
 }
 
+// ops-1-cloudinary — student passport photo signed upload (browser → Cloudinary)
+function generateStudentPhotoUploadSignature({ schoolId, studentId }) {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const sid = studentId || 'new';
+  const publicId = `student-${schoolId}-${sid}-${timestamp}`;
+  const folder = 'klassrun-student-photos';
+  const preset = process.env.CLOUDINARY_UPLOAD_PRESET;
+  const paramsToSign = { folder, public_id: publicId, timestamp, upload_preset: preset };
+  const signature = cloudinary.utils.api_sign_request(paramsToSign, process.env.CLOUDINARY_API_SECRET);
+  return {
+    signature, timestamp,
+    cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+    apiKey: process.env.CLOUDINARY_API_KEY,
+    preset, folder, publicId,
+  };
+}
+
+// ops-1-cloudinary — server-side PDF (report card) upload from a Buffer
+function uploadPdfBuffer(buffer, publicId) {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { resource_type: 'raw', folder: 'klassrun-report-cards', public_id: publicId, overwrite: true, format: 'pdf' },
+      (error, result) => {
+        if (error) return reject(error);
+        if (!result || !result.secure_url) return reject(new Error('No secure_url from Cloudinary'));
+        resolve(result.secure_url);
+      }
+    );
+    stream.end(buffer);
+  });
+}
+
 module.exports = {
   isConfigured,
   generateLogoUploadSignature,
+  generateStudentPhotoUploadSignature,
+  uploadPdfBuffer,
 };

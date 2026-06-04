@@ -84,6 +84,9 @@ model School {
   schemesOfWork  SchemeOfWork[] // batch-3-phase-2-scheme-model
   @@index([slug])
   @@index([status])
+  students      Student[]
+  resultEntries ResultEntry[]
+  reportCards   ReportCard[] // ops-1-rel-school
   @@map("schools")
 }
 
@@ -138,6 +141,8 @@ model AcademicSession {
   endDate     DateTime?
   updatedAt   DateTime @updatedAt @default(now())
 
+  resultEntries ResultEntry[]
+  reportCards   ReportCard[] // ops-1-rel-session
   @@map("academic_sessions")
 }
 
@@ -160,6 +165,7 @@ model Class {
   @@unique([schoolId, name])
   @@index([schoolId]) // NEW
   @@index([schoolId, archivedAt])
+  students Student[] // ops-1-rel-class
   @@map("classes")
 }
 
@@ -186,6 +192,7 @@ model Subject {
   @@unique([schoolId, classId, name])
   @@index([schoolId]) // NEW
   @@index([schoolId, archivedAt])
+  resultEntries ResultEntry[] // ops-1-rel-subject
   @@map("subjects")
 }
 
@@ -393,6 +400,15 @@ enum AcademicEventType {
   QUESTION_GENERATED
   ASSESSMENT_EDITED
   ASSESSMENT_DISCARDED
+
+  // ops-1-academic-events
+  STUDENT_CREATED
+  STUDENT_UPDATED
+  STUDENT_ARCHIVED
+  STUDENT_RESTORED
+  RESULT_ENTERED
+  REPORT_CARD_GENERATED
+  REPORT_CARD_LOCKED
 }
 
 
@@ -475,4 +491,94 @@ model SchemeOfWork {
   @@index([schoolId, subjectId, classId])
   @@index([schoolId, deletedAt])
   @@map("schemes_of_work")
+}
+
+
+// ════════════════════════════════════════════════════════════════════════════
+//  OPERATIONS 1 — Student spine + Results + Report cards
+// ════════════════════════════════════════════════════════════════════════════
+// ops-1-student-models
+model Student {
+  id              String    @id @default(uuid())
+  admissionNumber String
+  firstName       String
+  lastName        String
+  middleName      String?
+  photoUrl        String?
+  dateOfBirth     DateTime?
+  gender          String?
+  guardianName    String?
+  guardianPhone   String?
+  guardianEmail   String?
+
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  classId  String
+  class    Class  @relation(fields: [classId], references: [id])
+
+  results     ResultEntry[]
+  reportCards ReportCard[]
+
+  archivedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@unique([schoolId, admissionNumber])
+  @@index([schoolId])
+  @@index([schoolId, archivedAt])
+  @@index([schoolId, classId])
+  @@map("students")
+}
+
+model ResultEntry {
+  id        String      @id @default(uuid())
+  term      SessionTerm
+  ca1       Int         @default(0)
+  ca2       Int         @default(0)
+  objective Int         @default(0)
+  theory    Int         @default(0)
+  total     Int         @default(0)
+  grade     String
+
+  schoolId    String
+  school      School          @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  studentId   String
+  student     Student         @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  subjectId   String
+  subject     Subject         @relation(fields: [subjectId], references: [id])
+  sessionId   String
+  session     AcademicSession @relation(fields: [sessionId], references: [id])
+  enteredById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([studentId, subjectId, sessionId, term])
+  @@index([schoolId])
+  @@index([schoolId, sessionId, term])
+  @@map("result_entries")
+}
+
+model ReportCard {
+  id       String      @id @default(uuid())
+  term     SessionTerm
+  snapshot Json
+  pdfUrl   String?
+  lockedAt DateTime?
+
+  schoolId      String
+  school        School          @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  studentId     String
+  student       Student         @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  sessionId     String
+  session       AcademicSession @relation(fields: [sessionId], references: [id])
+  generatedById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([studentId, sessionId, term])
+  @@index([schoolId])
+  @@index([schoolId, sessionId, term])
+  @@map("report_cards")
 }
