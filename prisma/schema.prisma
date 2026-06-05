@@ -90,6 +90,8 @@ model School {
   attendanceRecords  AttendanceRecord[] // ops-2-rel-school
   behaviourRecords   BehaviourRecord[] // ops-2-rel-school
   reportCardComments ReportCardComment[] // ops-2-rel-school
+  promotionRecords   PromotionRecord[] // ops-3-rel-school
+  feeRecords         FeeRecord[] // ops-4-rel-school
   @@map("schools")
 }
 
@@ -149,6 +151,8 @@ model AcademicSession {
   attendanceRecords  AttendanceRecord[] // ops-2-rel-session
   behaviourRecords   BehaviourRecord[] // ops-2-rel-session
   reportCardComments ReportCardComment[] // ops-2-rel-session
+  promotionRecords   PromotionRecord[] // ops-3-rel-session
+  feeRecords         FeeRecord[] // ops-4-rel-session
   @@map("academic_sessions")
 }
 
@@ -172,6 +176,8 @@ model Class {
   @@index([schoolId]) // NEW
   @@index([schoolId, archivedAt])
   students Student[] // ops-1-rel-class
+  promotionsFrom PromotionRecord[] @relation("PromotionFrom") // ops-3-rel-class-from
+  promotionsTo   PromotionRecord[] @relation("PromotionTo") // ops-3-rel-class-to
   @@map("classes")
 }
 
@@ -420,6 +426,12 @@ enum AcademicEventType {
   BEHAVIOUR_RECORDED
   REPORT_CARD_COMMENT_GENERATED
   REPORT_CARD_COMMENT_EDITED
+  // ops-3-academic-events
+  PROMOTION_EXECUTED
+  PROMOTION_REVERSED
+  // ops-4-academic-events
+  FEE_MARKED
+  FEE_BULK_MARKED
 }
 
 
@@ -532,6 +544,8 @@ model Student {
   attendanceRecords  AttendanceRecord[] // ops-2-rel-student
   behaviourRecords   BehaviourRecord[] // ops-2-rel-student
   reportCardComments ReportCardComment[] // ops-2-rel-student
+  promotionRecords   PromotionRecord[] // ops-3-rel-student
+  feeRecords         FeeRecord[] // ops-4-rel-student
 
   archivedAt DateTime?
   createdAt  DateTime  @default(now())
@@ -672,4 +686,65 @@ model ReportCardComment {
   @@index([schoolId])
   @@index([schoolId, sessionId, term])
   @@map("report_card_comments")
+}
+
+
+// ════════════════════════════════════════════════════════════════════════════
+//  OPERATIONS 3 — Promotion
+// ════════════════════════════════════════════════════════════════════════════
+// ops-3-promotion-model
+model PromotionRecord {
+  id         String      @id @default(uuid())
+  decision   String      // "PROMOTED" | "RETAINED"
+  cumulative Float?      // cumulative average at decision time (null if no results)
+  threshold  Float?      // min-average rule used for the run (record-keeping)
+  uptoTerm   SessionTerm // term the cumulative was computed through
+
+  schoolId    String
+  school      School          @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  studentId   String
+  student     Student         @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  sessionId   String
+  session     AcademicSession @relation(fields: [sessionId], references: [id])
+  fromClassId String
+  fromClass   Class           @relation("PromotionFrom", fields: [fromClassId], references: [id], onDelete: Restrict)
+  toClassId   String?
+  toClass     Class?          @relation("PromotionTo", fields: [toClassId], references: [id], onDelete: Restrict)
+  decidedById  String?
+  reversedAt   DateTime?
+  reversedById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([schoolId])
+  @@index([schoolId, sessionId])
+  @@index([studentId, sessionId])
+  @@map("promotion_records")
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  OPERATIONS 4 — Fees (status-only, term-scoped)
+// ════════════════════════════════════════════════════════════════════════════
+// ops-4-fee-model
+model FeeRecord {
+  id     String      @id @default(uuid())
+  term   SessionTerm
+  status String      @default("UNPAID") // "PAID" | "UNPAID"
+
+  schoolId   String
+  school     School          @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  studentId  String
+  student    Student         @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  sessionId  String
+  session    AcademicSession @relation(fields: [sessionId], references: [id])
+  markedById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([studentId, sessionId, term])
+  @@index([schoolId])
+  @@index([schoolId, sessionId, term])
+  @@map("fee_records")
 }

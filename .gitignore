@@ -30,4 +30,4 @@ Thumbs.db
 *.swp
 
 # Prisma — DO NOT ignore prisma/migrations or schema.prisma!
-# Those MUST be in git.
+# Those MUST be in git..installer-backup-*/

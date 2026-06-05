@@ -17,6 +17,7 @@ const { authenticate, authorize } = require('../../middleware/auth');
 const prisma = require('../../config/db');
 const { recordAcademicEvent } = require('../../lib/audit');
 const grading = require('../../lib/grading');
+const resultsAggregate = require('../../lib/results-aggregate'); // ops-3-cumulative-fold
 const cloudinaryLib = require('../../lib/cloudinary');
 const { renderReportCardPdf, BEHAVIOUR_ATTRS } = require('../../lib/pdf/report-card-pdf');
 
@@ -148,6 +149,21 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), async (req, re
     const behById = {}; behaviourRecords.forEach((b) => { behById[b.studentId] = b; });
     const comById = {}; commentRecords.forEach((c) => { comById[c.studentId] = c; });
 
+    // ops-3-cumulative-fold: cumulative average across the session's terms up to (and incl.) this one
+    const cumTerms = resultsAggregate.termsUpTo(term);
+    const cumEntries = await prisma.resultEntry.findMany({
+      where: { schoolId: req.user.schoolId, sessionId: session.id, term: { in: cumTerms }, studentId: { in: studentIds } },
+      select: { studentId: true, term: true, total: true },
+    });
+    const cumEntriesByStudent = {};
+    for (const ce of cumEntries) {
+      (cumEntriesByStudent[ce.studentId] = cumEntriesByStudent[ce.studentId] || []).push(ce);
+    }
+    const cumById = {};
+    students.forEach((s) => {
+      cumById[s.id] = resultsAggregate.cumulativeAverage(resultsAggregate.perTermAverages(cumEntriesByStudent[s.id] || []));
+    });
+
     const classSize = students.length;
     const generatedAt = new Date();
 
@@ -192,7 +208,7 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), async (req, re
           average: agg.average,
           overallPosition: overallPos[s.id] || null,
           classSize,
-          cumulativeAverage: null, // Ops 2/3 (cross-term)
+          cumulativeAverage: cumById[s.id] ?? null, // ops-3-cumulative-fold
         },
         attendance: attendanceFromRecord(attById[s.id]), // ops-2-generate-fold
         behaviour: behaviourFromRecord(behById[s.id]),    // ops-2-generate-fold
