@@ -31,3 +31,4 @@ Thumbs.db
 
 # Prisma — DO NOT ignore prisma/migrations or schema.prisma!
 # Those MUST be in git..installer-backup-*/
+.installer-backup-20260606-080556/

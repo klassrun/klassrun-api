@@ -278,7 +278,9 @@ const login = async (req, res, next) => {
 // ───── INVITE TEACHER ───────────────────────────────────────────────────────
 const inviteTeacher = async (req, res, next) => {
   try {
-    const { email: teacherEmail, firstName, lastName } = req.body;
+    const { email: teacherEmail, firstName, lastName, role: requestedRole } = req.body; // ops-4c-invite-role
+    const INVITABLE_ROLES = ['TEACHER', 'BURSAR'];
+    const inviteRole = INVITABLE_ROLES.includes(requestedRole) ? requestedRole : 'TEACHER';
     const { schoolId, id: inviterId } = req.user;
 
     if (!teacherEmail || !firstName || !lastName) {
@@ -306,7 +308,7 @@ const inviteTeacher = async (req, res, next) => {
         password: '',
         firstName,
         lastName,
-        role: 'TEACHER',
+        role: inviteRole,
         inviteToken,
         inviteExpiresAt,
         inviteAccepted: false,
@@ -364,7 +366,7 @@ const resendInvite = async (req, res, next) => {
     const { schoolId, id: inviterId } = req.user;
 
     const teacher = await prisma.user.findFirst({
-      where: { id: teacherId, schoolId, role: 'TEACHER' },
+      where: { id: teacherId, schoolId, role: { in: ['TEACHER', 'BURSAR'] } },
     });
 
     if (!teacher) {

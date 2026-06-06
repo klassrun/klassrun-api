@@ -1,5 +1,6 @@
 // src/modules/fees/fee.routes.js
 // ops-4-fee-routes
+// ops-4c-bursar-authorize — fees open to SCHOOL_ADMIN and BURSAR
 //
 // Operations 4 — Fees (status-only, term-scoped). MOLEK blueprint, Premium tier.
 // SCHOOL_ADMIN-only in this phase (BURSAR role deferred to Ops 4c).
@@ -28,7 +29,7 @@ function validTerm(t) { return typeof t === 'string' && TERMS.includes(t); }
 function validStatus(s) { return typeof s === 'string' && STATUSES.includes(s); }
 
 // ── GET / (roster + server-computed summary) ──────────────────────────────
-router.get('/', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
+router.get('/', authenticate, authorize('SCHOOL_ADMIN', 'BURSAR'), async (req, res, next) => {
   try {
     const classId = req.query.classId ? String(req.query.classId) : '';
     const sessionId = req.query.sessionId ? String(req.query.sessionId) : '';
@@ -78,7 +79,7 @@ router.get('/', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) 
 });
 
 // ── POST /mark (one student) ──────────────────────────────────────────────
-router.post('/mark', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
+router.post('/mark', authenticate, authorize('SCHOOL_ADMIN', 'BURSAR'), async (req, res, next) => {
   try {
     const body = req.body || {};
     const studentId = typeof body.studentId === 'string' ? body.studentId : '';
@@ -117,7 +118,7 @@ router.post('/mark', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, n
 });
 
 // ── POST /bulk-mark (whole class or studentIds subset) ────────────────────
-router.post('/bulk-mark', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
+router.post('/bulk-mark', authenticate, authorize('SCHOOL_ADMIN', 'BURSAR'), async (req, res, next) => {
   try {
     const body = req.body || {};
     const classId = typeof body.classId === 'string' ? body.classId : '';

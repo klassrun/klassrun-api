@@ -22,6 +22,7 @@ const { recordAuthEvent }     = require('../../lib/audit');
 
 const INVITE_TTL_DAYS = 7;
 const FRONTEND_URL    = process.env.FRONTEND_URL || 'http://localhost:3000';
+const STAFF_ROLES = ['TEACHER', 'BURSAR']; // ops-4c-staff-roles — bursar managed alongside teachers
 
 function extractIp(req) {
   return (
@@ -44,7 +45,7 @@ const listTeachers = async (req, res, next) => {
     const teachers = await prisma.user.findMany({
       where: {
         schoolId,
-        role: 'TEACHER',
+        role: { in: STAFF_ROLES },
       },
       select: {
         id:              true,
@@ -54,6 +55,7 @@ const listTeachers = async (req, res, next) => {
         inviteAccepted:  true,
         revokedAt:       true,
         createdAt:       true,
+        role:            true,
         // Don't expose password, tokens, etc.
       },
       orderBy: [
@@ -90,7 +92,7 @@ const revokeTeacher = async (req, res, next) => {
       where: {
         id:       teacherId,
         schoolId,
-        role:     'TEACHER',
+        role:     { in: STAFF_ROLES },
       },
     });
 
@@ -154,7 +156,7 @@ const reinstateTeacher = async (req, res, next) => {
     const adminId   = req.user.id;
 
     const teacher = await prisma.user.findFirst({
-      where: { id: teacherId, schoolId, role: 'TEACHER' },
+      where: { id: teacherId, schoolId, role: { in: STAFF_ROLES } },
     });
 
     if (!teacher) {
@@ -196,7 +198,7 @@ const resetTeacherPassword = async (req, res, next) => {
     const adminId   = req.user.id;
 
     const teacher = await prisma.user.findFirst({
-      where: { id: teacherId, schoolId, role: 'TEACHER' },
+      where: { id: teacherId, schoolId, role: { in: STAFF_ROLES } },
       include: { school: { select: { name: true } } },
     });
 
