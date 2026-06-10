@@ -13,7 +13,8 @@
     "db:seed:super-admin": "node scripts/seed-super-admin.js",
     "db:studio": "npx prisma studio",
     "test:slug": "node scripts/test-slug.js",
-    "test:auth": "node scripts/test-auth.js"
+    "test:auth": "node scripts/test-auth.js",
+    "build": "prisma generate"
   },
   "keywords": [
     "edtech",
