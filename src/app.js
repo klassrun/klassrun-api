@@ -70,7 +70,7 @@ const corsOptions = {
 // ── MIDDLEWARE ──────────────────────────────────────────────────────────────
 app.use(helmet());
 app.use(cors(corsOptions));
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '2mb' })); // perf: 10mb let anyone POST huge bodies anywhere
 
 // ── HEALTH CHECK ────────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
@@ -104,6 +104,11 @@ app.use('/api/behaviour',             behaviourRoutes); // ops-2-routes-mount
 app.use('/api/report-cards/comments', reportCardCommentRoutes); // ops-2-routes-mount (must precede /api/report-cards)
 app.use('/api/report-cards', reportCardRoutes); // ops-1-routes-mount
 
+// ── 404 (must come before the error handler) ────────────────────────────────
+app.use((req, res) => {
+  res.status(404).json({ error: { message: 'Route not found' } });
+});
+
 // ── ERROR HANDLER ───────────────────────────────────────────────────────────
 app.use((err, req, res, next) => {
   console.error('Error:', err.message);
@@ -114,11 +119,6 @@ app.use((err, req, res, next) => {
       ...(process.env.NODE_ENV !== 'production' && { stack: err.stack }),
     },
   });
-});
-
-// ── 404 ─────────────────────────────────────────────────────────────────────
-app.use((req, res) => {
-  res.status(404).json({ error: { message: 'Route not found' } });
 });
 
 module.exports = app;

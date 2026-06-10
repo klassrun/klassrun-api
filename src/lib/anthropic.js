@@ -239,7 +239,11 @@ async function _callAnthropicWithSystem(systemPrompt, userMessage, maxTokens, te
     model:       ANTHROPIC_MODEL,
     max_tokens:  maxTokens,
     temperature: temperature,
-    system:      systemPrompt,
+    // perf-1-prompt-caching: system prompts are 1.5k-2.5k tokens and identical
+    // across calls. Caching cuts their input cost ~90% on cache hits.
+    system: [
+      { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
+    ],
       messages: [
         { role: 'user', content: userMessage },
       ],

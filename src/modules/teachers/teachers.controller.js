@@ -19,6 +19,7 @@ const email  = require('../../lib/email');
 const { inviteEmail }         = require('../../lib/email-templates/invite');
 const { teacherRevokedEmail } = require('../../lib/email-templates/teacher-revoked');
 const { recordAuthEvent }     = require('../../lib/audit');
+const { invalidateUserCache } = require('../../middleware/auth'); // perf-2-auth-cache
 
 const INVITE_TTL_DAYS = 7;
 const FRONTEND_URL    = process.env.FRONTEND_URL || 'http://localhost:3000';
@@ -119,6 +120,7 @@ const revokeTeacher = async (req, res, next) => {
       where: { id: teacherId },
       data:  { revokedAt: new Date() },
     });
+    invalidateUserCache(teacherId); // perf-2: revocation takes effect immediately
 
     await recordAuthEvent('TEACHER_REVOKED', {
       req,

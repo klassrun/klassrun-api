@@ -167,8 +167,17 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), async (req, re
     const classSize = students.length;
     const generatedAt = new Date();
 
+    // perf-6: prefetch existing cards in ONE query (was 1 findUnique per student)
+    const existingCards = await prisma.reportCard.findMany({
+      where: { schoolId: req.user.schoolId, sessionId: session.id, term, studentId: { in: studentIds } },
+      select: { id: true, studentId: true, term: true, pdfUrl: true, lockedAt: true, snapshot: true },
+    });
+    const existingByStudent = {};
+    existingCards.forEach((c) => { existingByStudent[c.studentId] = c; });
+
     // Build + persist one ReportCard per student (persist-before-respond).
     const saved = [];
+    const upsertOps = []; // perf-6: batched in one transaction after the loop
     for (const s of students) {
       const es = (byStudent[s.id] || []).slice().sort((a, b) =>
         (subjectName[a.subjectId] || '').localeCompare(subjectName[b.subjectId] || ''));
@@ -217,15 +226,12 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), async (req, re
       };
 
       // ops-2-generate-fold: never overwrite a finalized (locked) card
-      const existingCard = await prisma.reportCard.findUnique({
-        where: { studentId_sessionId_term: { studentId: s.id, sessionId: session.id, term } },
-        select: { id: true, studentId: true, term: true, pdfUrl: true, lockedAt: true, snapshot: true },
-      });
+      const existingCard = existingByStudent[s.id]; // perf-6: map lookup, no query
       if (existingCard && existingCard.lockedAt) {
         saved.push(existingCard);
         continue;
       }
-      const card = await prisma.reportCard.upsert({
+      upsertOps.push(prisma.reportCard.upsert({
         where: {
           studentId_sessionId_term: { studentId: s.id, sessionId: session.id, term },
         },
@@ -245,8 +251,13 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), async (req, re
         select: {
           id: true, studentId: true, term: true, pdfUrl: true, lockedAt: true, snapshot: true,
         },
-      });
-      saved.push(card);
+      }));
+    }
+
+    // perf-6: one transaction instead of N sequential upserts
+    if (upsertOps.length > 0) {
+      const upserted = await prisma.$transaction(upsertOps);
+      saved.push(...upserted);
     }
 
     recordAcademicEvent('REPORT_CARD_GENERATED', {

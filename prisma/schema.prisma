@@ -124,6 +124,7 @@ model User {
 
   schemesOfWork  SchemeOfWork[] // batch-3-phase-2-scheme-model
   @@index([schoolId]) // NEW: faster tenant-scoped queries
+  @@index([schoolId, role, revokedAt]) // perf-4: teacher list hot path
   @@map("users")
 }
 
@@ -241,6 +242,7 @@ model LessonNote {
 
   @@index([schoolId]) // NEW
   @@index([schoolId, subjectId, classId]) // NEW: dashboard queries
+  @@index([schoolId, teacherId, deletedAt]) // perf-4: GET /api/notes hot path
   @@map("lesson_notes")
 }
 

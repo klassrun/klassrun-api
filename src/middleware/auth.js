@@ -2,11 +2,11 @@
 //
 // JWT authentication + role authorization.
 //
-// authenticate: verifies the JWT, loads the user, blocks revoked accounts,
-//   blocks suspended schools, and blocks locked-out accounts.
-//
-// authorize(...roles): restricts access to specific user roles. Use AFTER
-//   authenticate.
+// perf-2-auth-cache: the per-request user lookup is cached in-memory for 60s.
+// Revocation / suspension / lockout still take effect within the TTL window,
+// and revokeTeacher calls invalidateUserCache() for immediate effect.
+// NOTE: in-memory cache assumes a single instance. If we ever scale to
+// multiple instances, swap this for Redis.
 
 const jwt = require('jsonwebtoken');
 const prisma = require('../config/db');
@@ -15,6 +15,32 @@ const JWT_SECRET = process.env.JWT_SECRET;
 
 if (!JWT_SECRET) {
   throw new Error('JWT_SECRET is not set in environment');
+}
+
+// ── perf-2: tiny TTL cache ──────────────────────────────────────────────────
+const USER_CACHE_TTL_MS = 60_000;
+const USER_CACHE_MAX    = 5_000; // hard cap so it can't grow unbounded
+const userCache = new Map();     // userId → { user, expires }
+
+function getCachedUser(userId) {
+  const hit = userCache.get(userId);
+  if (hit && hit.expires > Date.now()) return hit.user;
+  if (hit) userCache.delete(userId);
+  return null;
+}
+
+function setCachedUser(userId, user) {
+  if (userCache.size >= USER_CACHE_MAX) {
+    // Drop the oldest entry (Map preserves insertion order)
+    const oldest = userCache.keys().next().value;
+    if (oldest !== undefined) userCache.delete(oldest);
+  }
+  userCache.set(userId, { user, expires: Date.now() + USER_CACHE_TTL_MS });
+}
+
+/** Force a user's next request to hit the DB (e.g. after revocation). */
+function invalidateUserCache(userId) {
+  userCache.delete(userId);
 }
 
 /**
@@ -27,7 +53,6 @@ function extractToken(req) {
   if (authHeader?.startsWith('Bearer ')) {
     return authHeader.slice(7);
   }
-  // Fall back to cookie if forwarded by Vercel proxy
   const cookieHeader = req.get('cookie');
   if (cookieHeader) {
     const match = cookieHeader.match(/klassrun_token=([^;]+)/);
@@ -54,14 +79,17 @@ const authenticate = async (req, res, next) => {
       });
     }
 
-    // Load the user fresh from the DB so we always check current state
-    // (revoked / locked / school suspended) on every request.
-    const user = await prisma.user.findUnique({
-      where: { id: payload.userId },
-      include: {
-        school: { select: { id: true, name: true, status: true } },
-      },
-    });
+    // perf-2: serve from cache when fresh; otherwise load + cache.
+    let user = getCachedUser(payload.userId);
+    if (!user) {
+      user = await prisma.user.findUnique({
+        where: { id: payload.userId },
+        include: {
+          school: { select: { id: true, name: true, status: true } },
+        },
+      });
+      if (user) setCachedUser(payload.userId, user);
+    }
 
     if (!user) {
       return res.status(401).json({
@@ -84,13 +112,12 @@ const authenticate = async (req, res, next) => {
     }
 
     // Account temporarily locked due to failed login attempts
-    if (user.lockedUntil && user.lockedUntil > new Date()) {
+    if (user.lockedUntil && new Date(user.lockedUntil) > new Date()) {
       return res.status(423).json({
         error: { message: 'Account is temporarily locked due to too many failed attempts. Try again later.' },
       });
     }
 
-    // Attach the user to the request for downstream handlers
     req.user = {
       id:         user.id,
       email:      user.email,
@@ -107,13 +134,6 @@ const authenticate = async (req, res, next) => {
   }
 };
 
-/**
- * Restrict access to specific roles.
- *
- * @example
- *   router.post('/invite', authenticate, authorize('SCHOOL_ADMIN'), handler);
- *   router.get('/admin/schools', authenticate, authorize('SUPER_ADMIN'), handler);
- */
 const authorize = (...allowedRoles) => (req, res, next) => {
   if (!req.user) {
     return res.status(401).json({ error: { message: 'Not authenticated' } });
@@ -126,4 +146,4 @@ const authorize = (...allowedRoles) => (req, res, next) => {
   next();
 };
 
-module.exports = { authenticate, authorize };
+module.exports = { authenticate, authorize, invalidateUserCache };

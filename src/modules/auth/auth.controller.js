@@ -258,7 +258,7 @@ const login = async (req, res, next) => {
     const token = generateToken(user.id, user.role);
     const portalUrl = user.school?.slug ? slugUtil.buildPortalUrl(user.school.slug) : null;
 
-    await recordAuthEvent('LOGIN_SUCCESS', { req, userId: user.id, email: user.email, schoolId: user.schoolId });
+    recordAuthEvent('LOGIN_SUCCESS', { req, userId: user.id, email: user.email, schoolId: user.schoolId }); // perf-7: fire-and-forget (helper never throws)
 
     return res.json({
       message: 'Login successful',

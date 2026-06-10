@@ -191,12 +191,12 @@ router.post('/generate', authenticate, authorize('TEACHER'), async (req, res, ne
       },
     });
 
-    // Save each question to QuestionBankEntry (UUID fingerprint — no dedup in 3.3a)
+    // perf-5-createMany: one round trip instead of N inserts
     // batch-3-phase-3a-bank-save
     const questions = Array.isArray(aiResult.content.questions) ? aiResult.content.questions : [];
-    const bankSavePromises = questions.map((q) =>
-      prisma.questionBankEntry.create({
-        data: {
+    try {
+      await prisma.questionBankEntry.createMany({
+        data: questions.map((q) => ({
           question:     q.question,
           options:      q.options || null,
           answer:       q.answer  || null,
@@ -207,13 +207,13 @@ router.post('/generate', authenticate, authorize('TEACHER'), async (req, res, ne
           waecAligned:  false,
           schoolId:     req.user.schoolId,
           subjectId:    subject.id,
-        },
-      }).catch((err) => {
-        // Non-fatal: log and continue (bank save failure must not break the response)
-        console.error('[bank-save] failed for one question:', err.message);
-      })
-    );
-    await Promise.all(bankSavePromises);
+        })),
+        skipDuplicates: true,
+      });
+    } catch (err) {
+      // Non-fatal: bank save failure must not break the response
+      console.error('[bank-save] createMany failed:', err.message);
+    }
 
     // Audit
     recordAcademicEvent('QUESTION_GENERATED', {
@@ -377,22 +377,26 @@ router.post('/generate-end-of-term', authenticate, authorize('TEACHER'), async (
       ...(sections.theory?.questions    || []).map(q => ({ ...q, qType: 'theory' })),
       ...(sections.essay?.questions     || []).map(q => ({ ...q, qType: 'essay' })),
     ];
-    await Promise.all(allQs.map(q =>
-      prisma.questionBankEntry.create({
-        data: {
+    // perf-5-createMany: one round trip instead of N inserts
+    try {
+      await prisma.questionBankEntry.createMany({
+        data: allQs.map((q) => ({
           question:     q.question,
           options:      q.options || null,
           answer:       q.answer  || null,
           questionType: q.qType,
           difficulty:   q.difficulty || diffVal,
           topic:        q.topic || topics[0] || subject.name,
-          fingerprint:  require('uuid').v4(),
+          fingerprint:  uuidv4(),
           waecAligned:  false,
           schoolId:     req.user.schoolId,
           subjectId:    subject.id,
-        },
-      }).catch(e => console.error('[bank-save-eot] failed:', e.message))
-    ));
+        })),
+        skipDuplicates: true,
+      });
+    } catch (e) {
+      console.error('[bank-save-eot] createMany failed:', e.message);
+    }
 
     recordAcademicEvent('QUESTION_GENERATED', {
       schoolId: req.user.schoolId,
