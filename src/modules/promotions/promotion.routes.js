@@ -19,6 +19,7 @@
 //        student is still sitting in the target class.
 
 const router = require('express').Router();
+const { requirePlan, requireActiveForWrites } = require('../../lib/plan-gate'); // gate-1-require
 const { authenticate, authorize } = require('../../middleware/auth');
 const prisma = require('../../config/db');
 const { recordAcademicEvent } = require('../../lib/audit');
@@ -156,7 +157,7 @@ router.get('/eligibility', authenticate, authorize('SCHOOL_ADMIN'), async (req, 
 });
 
 // ── POST /execute ─────────────────────────────────────────────────────────────
-router.post('/execute', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
+router.post('/execute', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('PROMOTION'), /* gate-1-promo-execute */ async (req, res, next) => {
   try {
     const body = req.body || {};
     const term = normTerm(body.term);
@@ -349,7 +350,7 @@ router.get('/', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) 
 });
 
 // ── POST /:id/reverse ───────────────────────────────────────────────────────
-router.post('/:id/reverse', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
+router.post('/:id/reverse', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('PROMOTION'), /* gate-1-promo-reverse */ async (req, res, next) => {
   try {
     const { id } = req.params;
     const rec = await prisma.promotionRecord.findFirst({

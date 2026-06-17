@@ -14,6 +14,7 @@
 // batch-3-phase-3a-assessments-routes
 
 const router   = require('express').Router();
+const { requirePlan, requireActiveForWrites } = require('../../lib/plan-gate'); // gate-1-require
 const { v4: uuidv4 } = require('uuid');
 const { authenticate, authorize } = require('../../middleware/auth');
 const prisma   = require('../../config/db');
@@ -38,7 +39,7 @@ function termLabel(t) {
 }
 
 // ── POST /api/assessments/generate ──────────────────────────────────────────
-router.post('/generate', authenticate, authorize('TEACHER'), async (req, res, next) => {
+router.post('/generate', authenticate, authorize('TEACHER'), requireActiveForWrites, /* gate-1-assess-gen */ async (req, res, next) => {
   try {
     const { classId, subjectId, topic, questionType, count, difficulty, duration, markPerQuestion, additionalNotes } = req.body || {};
 
@@ -251,7 +252,7 @@ router.post('/generate', authenticate, authorize('TEACHER'), async (req, res, ne
 // Both TEACHER and SCHOOL_ADMIN can browse the bank.
 // ── POST /api/assessments/generate-end-of-term ──────────────────────────────
 // batch-3-phase-3c-end-of-term-route
-router.post('/generate-end-of-term', authenticate, authorize('TEACHER'), async (req, res, next) => {
+router.post('/generate-end-of-term', authenticate, authorize('TEACHER'), requireActiveForWrites, /* gate-1-assess-eot */ async (req, res, next) => {
   try {
     const { classId, subjectId, topics, objectiveCount, theoryCount, essayCount, difficulty, duration, additionalNotes } = req.body || {};
 
@@ -548,7 +549,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
 });
 
 // ── PATCH /api/assessments/:id ───────────────────────────────────────────────
-router.patch('/:id', authenticate, authorize('TEACHER'), async (req, res, next) => {
+router.patch('/:id', authenticate, authorize('TEACHER'), requireActiveForWrites, /* gate-1-assess-patch */ async (req, res, next) => {
   try {
     const { id } = req.params;
     const existing = await prisma.assessment.findFirst({
@@ -580,7 +581,7 @@ router.patch('/:id', authenticate, authorize('TEACHER'), async (req, res, next) 
 });
 
 // ── DELETE /api/assessments/:id ──────────────────────────────────────────────
-router.delete('/:id', authenticate, async (req, res, next) => {
+router.delete('/:id', authenticate, requireActiveForWrites, /* gate-1-assess-del */ async (req, res, next) => {
   try {
     const { id } = req.params;
     const where = { id, schoolId: req.user.schoolId, deletedAt: null };

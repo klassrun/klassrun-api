@@ -10,6 +10,7 @@
 // BEHAVIOUR_ATTRS is the SINGLE source — imported from the PDF renderer (no copy).
 
 const router = require('express').Router();
+const { requirePlan, requireActiveForWrites } = require('../../lib/plan-gate'); // gate-1-require
 const { authenticate, authorize } = require('../../middleware/auth');
 const prisma = require('../../config/db');
 const { recordAcademicEvent } = require('../../lib/audit');
@@ -99,7 +100,7 @@ router.get('/grid', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, ne
 });
 
 // ── POST / (upsert one student's ratings) ─────────────────────────────────────
-router.post('/', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
+router.post('/', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('BEHAVIOUR'), /* gate-1-beh-post */ async (req, res, next) => {
   try {
     const body = req.body || {};
     const term = normTerm(body.term);

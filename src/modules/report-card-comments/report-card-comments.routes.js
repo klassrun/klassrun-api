@@ -13,6 +13,7 @@
 // /generate time (see report-card.routes.js ops-2-generate-fold).
 
 const router = require('express').Router();
+const { requirePlan, requireActiveForWrites } = require('../../lib/plan-gate'); // gate-1-require
 const { authenticate, authorize } = require('../../middleware/auth');
 const prisma = require('../../config/db');
 const { recordAcademicEvent } = require('../../lib/audit');
@@ -77,7 +78,7 @@ router.get('/', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) 
 });
 
 // ── POST /generate (AI; billing-gated) ───────────────────────────────────────
-router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
+router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('AI_COMMENTS'), /* gate-1-rcc-gen */ async (req, res, next) => {
   try {
     // Billing gate FIRST — this is the one operations endpoint that incurs AI cost.
     const gate = await checkGenerationAllowed(req.user.schoolId);
@@ -172,7 +173,7 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), async (req, re
 });
 
 // ── PUT / (manual save/edit; ungated) ─────────────────────────────────────────
-router.put('/', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
+router.put('/', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('AI_COMMENTS'), /* gate-1-rcc-put */ async (req, res, next) => {
   try {
     const body = req.body || {};
     const term = normTerm(body.term);

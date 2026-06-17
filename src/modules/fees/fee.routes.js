@@ -18,6 +18,7 @@
 //   POST /api/fees/bulk-mark                     whole class/subset(SCHOOL_ADMIN)
 
 const router = require('express').Router();
+const { requirePlan, requireActiveForWrites } = require('../../lib/plan-gate'); // gate-1-require
 const { authenticate, authorize } = require('../../middleware/auth');
 const prisma = require('../../config/db');
 const { recordAcademicEvent } = require('../../lib/audit');
@@ -79,7 +80,7 @@ router.get('/', authenticate, authorize('SCHOOL_ADMIN', 'BURSAR'), async (req, r
 });
 
 // ── POST /mark (one student) ──────────────────────────────────────────────
-router.post('/mark', authenticate, authorize('SCHOOL_ADMIN', 'BURSAR'), async (req, res, next) => {
+router.post('/mark', authenticate, authorize('SCHOOL_ADMIN', 'BURSAR'), requireActiveForWrites, requirePlan('FEES'), /* gate-1-fees-mark */ async (req, res, next) => {
   try {
     const body = req.body || {};
     const studentId = typeof body.studentId === 'string' ? body.studentId : '';
@@ -118,7 +119,7 @@ router.post('/mark', authenticate, authorize('SCHOOL_ADMIN', 'BURSAR'), async (r
 });
 
 // ── POST /bulk-mark (whole class or studentIds subset) ────────────────────
-router.post('/bulk-mark', authenticate, authorize('SCHOOL_ADMIN', 'BURSAR'), async (req, res, next) => {
+router.post('/bulk-mark', authenticate, authorize('SCHOOL_ADMIN', 'BURSAR'), requireActiveForWrites, requirePlan('FEES'), /* gate-1-fees-bulkmark */ async (req, res, next) => {
   try {
     const body = req.body || {};
     const classId = typeof body.classId === 'string' ? body.classId : '';

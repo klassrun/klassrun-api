@@ -13,6 +13,7 @@
 // structured "—" placeholders (data populated in Ops 2).
 
 const router = require('express').Router();
+const { requirePlan, requireActiveForWrites } = require('../../lib/plan-gate'); // gate-1-require
 const { authenticate, authorize } = require('../../middleware/auth');
 const prisma = require('../../config/db');
 const { recordAcademicEvent } = require('../../lib/audit');
@@ -72,7 +73,7 @@ function commentsFromRecord(rec) {
 }
 
 // ── POST /generate ──────────────────────────────────────────────────────────
-router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
+router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('RESULTS_REPORTCARDS'), /* gate-1-rc-gen */ async (req, res, next) => {
   try {
     const body = req.body || {};
     const term = normTerm(body.term);
@@ -347,7 +348,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
 });
 
 // ── POST /:id/pdf ─────────────────────────────────────────────────────────────
-router.post('/:id/pdf', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
+router.post('/:id/pdf', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, /* gate-1-rc-pdf */ async (req, res, next) => {
   try {
     const { id } = req.params;
     const card = await prisma.reportCard.findFirst({
@@ -388,7 +389,7 @@ router.post('/:id/pdf', authenticate, authorize('SCHOOL_ADMIN'), async (req, res
 });
 
 // ── POST /:id/lock ────────────────────────────────────────────────────────────
-router.post('/:id/lock', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
+router.post('/:id/lock', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('RESULTS_REPORTCARDS'), /* gate-1-rc-lock */ async (req, res, next) => {
   try {
     const { id } = req.params;
     const card = await prisma.reportCard.findFirst({ where: { id, schoolId: req.user.schoolId } });

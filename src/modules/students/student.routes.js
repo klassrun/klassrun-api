@@ -15,6 +15,7 @@
 //   POST   /api/students/photo-signature              Cloudinary sig (SCHOOL_ADMIN)
 
 const router = require('express').Router();
+const { requirePlan, requireActiveForWrites } = require('../../lib/plan-gate'); // gate-1-require
 const { authenticate, authorize } = require('../../middleware/auth');
 const prisma = require('../../config/db');
 const { recordAcademicEvent } = require('../../lib/audit');
@@ -84,7 +85,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
 });
 
 // ── POST / (create) ──────────────────────────────────────────────────────────
-router.post('/', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
+router.post('/', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('STUDENTS'), /* gate-1-students-post */ async (req, res, next) => {
   try {
     const body = req.body || {};
 
@@ -166,7 +167,7 @@ router.post('/', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next)
 });
 
 // ── PATCH /:id ────────────────────────────────────────────────────────────────
-router.patch('/:id', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
+router.patch('/:id', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('STUDENTS'), /* gate-1-students-patch */ async (req, res, next) => {
   try {
     const { id } = req.params;
     const existing = await prisma.student.findFirst({
@@ -256,7 +257,7 @@ router.patch('/:id', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, n
 });
 
 // ── POST /:id/archive ─────────────────────────────────────────────────────────
-router.post('/:id/archive', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
+router.post('/:id/archive', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('STUDENTS'), /* gate-1-students-archive */ async (req, res, next) => {
   try {
     const { id } = req.params;
     const existing = await prisma.student.findFirst({ where: { id, schoolId: req.user.schoolId } });
@@ -284,7 +285,7 @@ router.post('/:id/archive', authenticate, authorize('SCHOOL_ADMIN'), async (req,
 });
 
 // ── POST /:id/restore ─────────────────────────────────────────────────────────
-router.post('/:id/restore', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
+router.post('/:id/restore', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('STUDENTS'), /* gate-1-students-restore */ async (req, res, next) => {
   try {
     const { id } = req.params;
     const existing = await prisma.student.findFirst({
@@ -319,7 +320,7 @@ router.post('/:id/restore', authenticate, authorize('SCHOOL_ADMIN'), async (req,
 
 // ── POST /photo-signature ─────────────────────────────────────────────────────
 // Signed browser upload for a student passport photo (same pattern as logos).
-router.post('/photo-signature', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
+router.post('/photo-signature', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('STUDENTS'), /* gate-1-students-photosig */ async (req, res, next) => {
   try {
     if (!cloudinaryLib.isConfigured || !cloudinaryLib.isConfigured()) {
       return res.status(503).json({ error: { message: 'Image upload is not configured' } });

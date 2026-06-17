@@ -14,6 +14,7 @@
 // batch-3-phase-1-notes-routes
 
 const router = require('express').Router();
+const { requirePlan, requireActiveForWrites } = require('../../lib/plan-gate'); // gate-1-require
 const { authenticate, authorize } = require('../../middleware/auth');
 const prisma = require('../../config/db');
 const { recordAcademicEvent } = require('../../lib/audit');
@@ -41,7 +42,7 @@ function isStringInRange(v, min, max) {
 
 // ── POST /api/notes/generate ─────────────────────────────────────────────
 // TEACHER-only. Generates AI lesson note, persists, returns saved record.
-router.post('/generate', authenticate, authorize('TEACHER'), async (req, res, next) => {
+router.post('/generate', authenticate, authorize('TEACHER'), requireActiveForWrites, /* gate-1-notes-gen */ async (req, res, next) => {
   try {
     const { classId, subjectId, topic, week, duration, additionalNotes, subTopics } = req.body || {};
 
@@ -348,7 +349,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
 
 // ── PATCH /api/notes/:id ─────────────────────────────────────────────────
 // Allowlist: content only. Teacher-owned, not deleted.
-router.patch('/:id', authenticate, authorize('TEACHER'), async (req, res, next) => {
+router.patch('/:id', authenticate, authorize('TEACHER'), requireActiveForWrites, /* gate-1-notes-patch */ async (req, res, next) => {
   try {
     const { id } = req.params;
     const existing = await prisma.lessonNote.findFirst({
@@ -396,7 +397,7 @@ router.patch('/:id', authenticate, authorize('TEACHER'), async (req, res, next) 
 
 // ── DELETE /api/notes/:id ────────────────────────────────────────────────
 // Soft-delete. TEACHER can delete own; SCHOOL_ADMIN can delete any in school.
-router.delete('/:id', authenticate, async (req, res, next) => {
+router.delete('/:id', authenticate, requireActiveForWrites, /* gate-1-notes-del */ async (req, res, next) => {
   try {
     const { id } = req.params;
     const where = { id, schoolId: req.user.schoolId, deletedAt: null };

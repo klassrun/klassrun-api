@@ -14,6 +14,7 @@
 // batch-3-phase-2-schemes-routes
 
 const router = require('express').Router();
+const { requirePlan, requireActiveForWrites } = require('../../lib/plan-gate'); // gate-1-require
 const { authenticate, authorize } = require('../../middleware/auth');
 const prisma = require('../../config/db');
 const { recordAcademicEvent } = require('../../lib/audit');
@@ -42,7 +43,7 @@ function termLabel(t) {
 }
 
 // ── POST /api/schemes/generate ───────────────────────────────────────────
-router.post('/generate', authenticate, authorize('TEACHER'), async (req, res, next) => {
+router.post('/generate', authenticate, authorize('TEACHER'), requireActiveForWrites, /* gate-1-schemes-gen */ async (req, res, next) => {
   try {
     const { classId, subjectId, weekCount, topics, additionalNotes } = req.body || {};
 
@@ -304,7 +305,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
 });
 
 // ── PATCH /api/schemes/:id ───────────────────────────────────────────────
-router.patch('/:id', authenticate, authorize('TEACHER'), async (req, res, next) => {
+router.patch('/:id', authenticate, authorize('TEACHER'), requireActiveForWrites, /* gate-1-schemes-patch */ async (req, res, next) => {
   try {
     const { id } = req.params;
     const existing = await prisma.schemeOfWork.findFirst({
@@ -346,7 +347,7 @@ router.patch('/:id', authenticate, authorize('TEACHER'), async (req, res, next) 
 });
 
 // ── DELETE /api/schemes/:id ──────────────────────────────────────────────
-router.delete('/:id', authenticate, async (req, res, next) => {
+router.delete('/:id', authenticate, requireActiveForWrites, /* gate-1-schemes-del */ async (req, res, next) => {
   try {
     const { id } = req.params;
     const where = { id, schoolId: req.user.schoolId, deletedAt: null };

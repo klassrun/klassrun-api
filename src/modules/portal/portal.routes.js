@@ -6,6 +6,7 @@
 // to this same router.
 
 const router = require('express').Router();
+const { requirePlan, requireActiveForWrites } = require('../../lib/plan-gate'); // gate-1-require
 const { authenticate, authorize } = require('../../middleware/auth');
 const { portalLogin, portalAccept, sendPortalInvite } = require('./portal.controller');
 const { authenticatePortal } = require('./portal-auth.middleware'); // ops-5b-portal-data-routes
@@ -16,7 +17,7 @@ router.post('/login', portalLogin);
 router.post('/accept/:token', portalAccept);
 
 // ── Staff action: school admin sends a portal invite for a student ──────────
-router.post('/invite/:studentId', authenticate, authorize('SCHOOL_ADMIN'), sendPortalInvite);
+router.post('/invite/:studentId', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('PARENT_PORTAL'), /* gate-1-portal-invite */ sendPortalInvite);
 
 // ── Portal-authenticated reads (5b) — scoped to the token's student ──────────
 router.get('/me', authenticatePortal, portalMe);
