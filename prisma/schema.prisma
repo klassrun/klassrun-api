@@ -72,6 +72,9 @@ model School {
   contactEmail String?
   motto        String?
 
+  // ops-5-portal-fee-block
+  portalFeeBlockEnabled Boolean @default(false)
+
   // Relations
   users        User[]
   classes      Class[]
@@ -536,6 +539,12 @@ model Student {
   guardianName    String?
   guardianPhone   String?
   guardianEmail   String?
+
+  // ops-5-portal-fields
+  portalPasswordHash    String?
+  portalInviteToken     String?   @unique
+  portalInviteExpiresAt DateTime?
+  portalInviteAccepted  Boolean   @default(false)
 
   schoolId String
   school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)

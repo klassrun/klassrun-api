@@ -23,6 +23,7 @@ const behaviourRoutes         = require('./modules/behaviour/behaviour.routes');
 const reportCardCommentRoutes = require('./modules/report-card-comments/report-card-comments.routes'); // ops-2-routes-mount
 const promotionRoutes = require('./modules/promotions/promotion.routes'); // ops-3-routes-mount
 const feeRoutes = require('./modules/fees/fee.routes'); // ops-4-routes-mount
+const portalRoutes = require('./modules/portal/portal.routes'); // ops-5-routes-mount
 
 
 const app = express();
@@ -99,6 +100,7 @@ app.use('/api/students',     studentRoutes); // ops-1-routes-mount
 app.use('/api/results',      resultRoutes); // ops-1-routes-mount
 app.use('/api/promotions',   promotionRoutes); // ops-3-routes-mount
 app.use('/api/fees',          feeRoutes); // ops-4-routes-mount
+app.use('/api/portal',        portalRoutes); // ops-5-routes-mount
 app.use('/api/attendance',            attendanceRoutes); // ops-2-routes-mount
 app.use('/api/behaviour',             behaviourRoutes); // ops-2-routes-mount
 app.use('/api/report-cards/comments', reportCardCommentRoutes); // ops-2-routes-mount (must precede /api/report-cards)
