@@ -114,15 +114,12 @@ app.use((req, res) => {
 });
 
 // ── ERROR HANDLER ───────────────────────────────────────────────────────────
-app.use((err, req, res, next) => {
-  console.error('Error:', err.message);
-  const status = err.status || (err.message?.startsWith('CORS') ? 403 : 500);
-  res.status(status).json({
-    error: {
-      message: process.env.NODE_ENV === 'production' ? 'Something went wrong' : err.message,
-      ...(process.env.NODE_ENV !== 'production' && { stack: err.stack }),
-    },
-  });
+app.use((err, req, res, next) => { // hs-err-handler
+  const { friendlyError } = require('./lib/error-messages');
+  const { status, message } = friendlyError(err);
+  // Full detail (code + stack) logged server-side ONLY — never sent to the client.
+  console.error('[error]', status, req.method, req.originalUrl, err);
+  res.status(status).json({ error: { message } });
 });
 
 module.exports = app;
