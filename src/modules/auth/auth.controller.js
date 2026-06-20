@@ -524,6 +524,7 @@ const me = async (req, res, next) => {
           select: {
             id: true, name: true, slug: true, status: true, logoUrl: true,
             sessions: { where: { isCurrent: true }, take: 1 },
+            subscription: { select: { plan: true, status: true, trialEndsAt: true, endDate: true } }, // gate2-me-sub-select
           },
         },
       },
@@ -545,6 +546,14 @@ const me = async (req, res, next) => {
               logoUrl: user.school.logoUrl,
               portalUrl: buildPortalUrl(user.school.slug),
               currentSession: user.school.sessions[0] || null,
+              subscription: user.school.subscription
+                ? {
+                    plan: user.school.subscription.plan,
+                    status: user.school.subscription.status,
+                    trialEndsAt: user.school.subscription.trialEndsAt,
+                    endDate: user.school.subscription.endDate,
+                  }
+                : null, // gate2-me-sub-response
             }
           : null,
       },

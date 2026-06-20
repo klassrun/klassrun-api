@@ -325,6 +325,7 @@ model Subscription {
   trialEndsAt    DateTime? // NEW: powers the 14-day trial
   paystackSubId  String?
   paystackCustId String?
+  paystackRef    String?            @unique // pay-1-paystack-ref
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 

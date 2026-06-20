@@ -71,6 +71,7 @@ const corsOptions = {
 // ── MIDDLEWARE ──────────────────────────────────────────────────────────────
 app.use(helmet());
 app.use(cors(corsOptions));
+app.use('/api/billing/webhook', express.raw({ type: '*/*' }), require('./modules/billing/billing.webhook')); // pay-1-webhook-mount
 app.use(express.json({ limit: '2mb' })); // perf: 10mb let anyone POST huge bodies anywhere
 
 // ── HEALTH CHECK ────────────────────────────────────────────────────────────
@@ -105,6 +106,7 @@ app.use('/api/attendance',            attendanceRoutes); // ops-2-routes-mount
 app.use('/api/behaviour',             behaviourRoutes); // ops-2-routes-mount
 app.use('/api/report-cards/comments', reportCardCommentRoutes); // ops-2-routes-mount (must precede /api/report-cards)
 app.use('/api/report-cards', reportCardRoutes); // ops-1-routes-mount
+app.use('/api/billing',     require('./modules/billing/billing.routes')); // pay-1-billing-mount
 
 // ── 404 (must come before the error handler) ────────────────────────────────
 app.use((req, res) => {
