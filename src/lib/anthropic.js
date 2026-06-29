@@ -1409,7 +1409,227 @@ async function generateReportCardComments(params) {
 }
 
 
+
+// ════════════════════════════════════════════════════════════════════════════
+//  BATCH 4 — Scheme Upload: parse uploaded scheme text → structured weeks,
+//  and build the alignment context block that makes an uploaded week the
+//  authoritative source of truth for generateLessonNote.
+//  Reuses _callAnthropicWithSystem, stripFences, classifyAnthropicError.
+// ════════════════════════════════════════════════════════════════════════════
+
+const SCHEME_PARSE_MAX_TOKENS = 10000;
+
+// batch-4-scheme-parse-prompt
+const SCHEME_PARSE_SYSTEM_PROMPT = `You are Klassrun, an AI assistant built exclusively for Nigerian schools.
+Your job here is NARROW: you are given the raw extracted text of a school's
+EXISTING scheme of work (uploaded as a PDF or Word document, often from a state
+ministry or proprietor association). You must convert it into structured,
+week-by-week JSON. You are EXTRACTING, not authoring.
+
+STRICT RULES:
+1. EXTRACT ONLY WHAT IS PRESENT. Never invent topics, objectives, activities,
+   assessments, or resources that are not in the source text. If the source
+   does not state objectives for a week, return an empty array for that week's
+   objectives. An incomplete-but-faithful extraction is REQUIRED; a
+   complete-but-fabricated one is a failure.
+2. WEEKS ARE THE SPINE. Identify each week the document describes. Use the
+   week number stated in the document. If the document lists topics without
+   explicit week numbers, number them sequentially in the order they appear.
+3. Preserve the source's wording for topics. Lightly clean obvious extraction
+   noise (stray line breaks, repeated page numbers, headers/footers), but do
+   not paraphrase the actual content.
+4. If the text is clearly NOT a scheme of work (a letter, a policy with no
+   weekly breakdown, random text), return {"error": "..."} explaining briefly
+   what it looks like instead.
+5. Output is for a Nigerian classroom; keep Nigerian English as written.
+6. NOTATION: if the source contains mathematics/chemistry/physics, preserve it
+   as written; do not attempt to LaTeX-ify content you are merely extracting.
+
+OUTPUT FORMAT:
+Respond with ONLY valid JSON matching this exact shape — no preamble, no
+markdown fences, no commentary:
+
+{
+  "title": "string — the scheme's title if stated, else a sensible one from class+subject",
+  "subject": "string — if discernible from the text, else empty string",
+  "class": "string — if discernible, else empty string",
+  "term": "string — FIRST/SECOND/THIRD if stated, else empty string",
+  "overview": "string — the document's overview/intro if present, else empty string",
+  "weeks": [
+    {
+      "weekNumber": 1,
+      "topic": "string — required, the week's topic as written",
+      "objectives": ["string"],
+      "activities": ["string"],
+      "assessment": "string — empty string if not stated",
+      "resources": ["string"]
+    }
+  ]
+}
+
+If you cannot find any weekly structure at all, respond with:
+{"error": "string — brief reason"}`;
+
+// batch-4-scheme-parse-builder
+function buildSchemeParseUserMessage({ classObj, subject, rawText }) {
+  const lines = [
+    'Convert the following uploaded scheme-of-work text into structured JSON.',
+    '',
+    `Class (for context): ${classObj && classObj.name ? classObj.name : 'not specified'}`,
+    `Subject (for context): ${subject && subject.name ? subject.name : 'not specified'}`,
+    '',
+    'RAW EXTRACTED TEXT (between the markers):',
+    '<<<BEGIN_SCHEME_TEXT',
+    rawText,
+    'END_SCHEME_TEXT>>>',
+  ];
+  return lines.join('\n');
+}
+
+// batch-4-scheme-parse-validator
+// Lenient: extraction may legitimately leave fields empty. Only weekNumber +
+// non-empty topic are required per week; everything else optional.
+function isValidParsedScheme(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  if (!Array.isArray(obj.weeks) || obj.weeks.length === 0) return false;
+  if (obj.weeks.length > 20) return false;
+  for (const w of obj.weeks) {
+    if (!w || typeof w !== 'object') return false;
+    if (!Number.isInteger(w.weekNumber) || w.weekNumber < 1 || w.weekNumber > 20) return false;
+    if (typeof w.topic !== 'string' || !w.topic.trim()) return false;
+    if (w.objectives !== undefined && !Array.isArray(w.objectives)) return false;
+    if (w.activities !== undefined && !Array.isArray(w.activities)) return false;
+    if (w.resources  !== undefined && !Array.isArray(w.resources))  return false;
+    if (w.assessment !== undefined && typeof w.assessment !== 'string') return false;
+  }
+  return true;
+}
+
+// batch-4-scheme-parse-normalize
+function normalizeParsedScheme(parsed, fallback) {
+  return {
+    title:    typeof parsed.title === 'string' && parsed.title.trim() ? parsed.title.trim() : ((fallback && fallback.title) || 'Uploaded scheme of work'),
+    subject:  typeof parsed.subject === 'string' ? parsed.subject : '',
+    class:    typeof parsed.class === 'string' ? parsed.class : '',
+    term:     typeof parsed.term === 'string' ? parsed.term : '',
+    overview: typeof parsed.overview === 'string' ? parsed.overview : '',
+    weeks: parsed.weeks.map((w) => ({
+      weekNumber: w.weekNumber,
+      topic: w.topic.trim(),
+      objectives: Array.isArray(w.objectives) ? w.objectives.filter((x) => typeof x === 'string') : [],
+      activities: Array.isArray(w.activities) ? w.activities.filter((x) => typeof x === 'string') : [],
+      assessment: typeof w.assessment === 'string' ? w.assessment : '',
+      resources:  Array.isArray(w.resources) ? w.resources.filter((x) => typeof x === 'string') : [],
+    })),
+  };
+}
+
+/**
+ * Parse an uploaded scheme's raw text into structured weeks.
+ * batch-4-scheme-parse-generator
+ * Throws .code:
+ *   NO_API_KEY · AI_REFUSED · AI_TRUNCATED · AI_MALFORMED · AI_INVALID
+ *   AI_NOT_A_SCHEME (detail = why it isn't a scheme)
+ *   plus the classifyAnthropicError surface (AI_TRANSIENT/AI_PERMANENT/AI_API_ERROR)
+ */
+async function parseSchemeFromText(params) {
+  const { classObj, subject, rawText, fallbackTitle } = params;
+  const userMessage = buildSchemeParseUserMessage({ classObj, subject, rawText });
+  const generatedAt = new Date().toISOString();
+
+  let result;
+  try {
+    result = await _callAnthropicWithSystem(SCHEME_PARSE_SYSTEM_PROMPT, userMessage, SCHEME_PARSE_MAX_TOKENS, 0.2);
+  } catch (err) {
+    if (err.code === 'NO_API_KEY') throw err;
+    throw classifyAnthropicError(err);
+  }
+
+  let text = stripFences(result.text);
+  console.error('[parseSchemeFromText] first response:', {
+    stopReason: result.stopReason, outputTokens: result.outputTokens, textLength: text.length,
+  });
+
+  if (text === 'I can only help with Nigerian school lesson planning.') {
+    const err = new Error('AI refused'); err.code = 'AI_REFUSED'; throw err;
+  }
+  if (result.stopReason === 'max_tokens') {
+    const err = new Error('AI output truncated at max_tokens'); err.code = 'AI_TRUNCATED'; throw err;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    let retry;
+    try {
+      retry = await _callAnthropicWithSystem(SCHEME_PARSE_SYSTEM_PROMPT, userMessage, SCHEME_PARSE_MAX_TOKENS, 0.1);
+    } catch (err) {
+      if (err.code === 'NO_API_KEY') throw err;
+      throw classifyAnthropicError(err);
+    }
+    text = stripFences(retry.text);
+    if (retry.stopReason === 'max_tokens') {
+      const err = new Error('AI output truncated on retry'); err.code = 'AI_TRUNCATED'; throw err;
+    }
+    try {
+      parsed = JSON.parse(text);
+    } catch (e2) {
+      const err = new Error('AI returned malformed JSON twice'); err.code = 'AI_MALFORMED'; throw err;
+    }
+  }
+
+  if (parsed && typeof parsed === 'object' && typeof parsed.error === 'string') {
+    const err = new Error('AI says not a scheme: ' + parsed.error);
+    err.code = 'AI_NOT_A_SCHEME'; err.detail = parsed.error; throw err;
+  }
+  if (!isValidParsedScheme(parsed)) {
+    console.error('[parseSchemeFromText] AI_INVALID:', {
+      hasWeeks: Array.isArray(parsed && parsed.weeks),
+      topLevelKeys: parsed && typeof parsed === 'object' ? Object.keys(parsed) : null,
+    });
+    const err = new Error('AI output missing required fields'); err.code = 'AI_INVALID'; throw err;
+  }
+
+  return { content: normalizeParsedScheme(parsed, { title: fallbackTitle }), model: ANTHROPIC_MODEL, generatedAt };
+}
+
+// batch-4-align-context
+// Build the authoritative context block injected into generateLessonNote via
+// its existing curriculumContext param. NO change to generateLessonNote needed.
+function buildAlignmentContext(week) {
+  if (!week || typeof week !== 'object') return null;
+  const lines = [
+    'CURRICULUM SOURCE OF TRUTH — the school has uploaded its OWN official scheme of work.',
+    'You MUST align this lesson note to the following week from that scheme. Do NOT',
+    'deviate from this topic or these objectives. Treat this as authoritative; it',
+    'overrides any general curriculum knowledge you have.',
+    '',
+    `Week ${week.weekNumber} topic (use this as THE topic): ${week.topic}`,
+  ];
+  if (Array.isArray(week.objectives) && week.objectives.length > 0) {
+    lines.push('');
+    lines.push('Objectives the scheme requires for this week (cover ALL of these):');
+    week.objectives.forEach((o, i) => lines.push(`  ${i + 1}. ${o}`));
+  }
+  if (Array.isArray(week.activities) && week.activities.length > 0) {
+    lines.push('');
+    lines.push('Activities the scheme lists for this week (build the lesson around these):');
+    week.activities.forEach((a, i) => lines.push(`  ${i + 1}. ${a}`));
+  }
+  if (typeof week.assessment === 'string' && week.assessment.trim()) {
+    lines.push('');
+    lines.push(`Assessment the scheme specifies: ${week.assessment.trim()}`);
+  }
+  return lines.join('\n');
+}
+
+
 module.exports = {
+  parseSchemeFromText,
+  buildAlignmentContext,
+  isValidParsedScheme,
+  normalizeParsedScheme,
   generateLessonNote,
   generateSchemeOfWork,
   generateExamQuestions,

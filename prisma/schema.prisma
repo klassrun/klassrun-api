@@ -439,6 +439,10 @@ enum AcademicEventType {
   // ops-4-academic-events
   FEE_MARKED
   FEE_BULK_MARKED
+  // batch-4-scheme-upload-events
+  SCHEME_UPLOADED
+  SCHEME_UPLOAD_FAILED
+  ALIGNED_NOTE_GENERATED
 }
 
 
@@ -500,6 +504,11 @@ model SchemeOfWork {
   contentType  ContentType @default(SCHEME_OF_WORK)
   sessionStamp String
   pdfUrl       String?
+  // batch-4-scheme-upload-fields
+  origin         String  @default("generated") // "generated" | "uploaded"
+  sourceFileUrl  String?
+  sourceFileName String?
+  parseStatus    String? // "parsed" | "failed" (null for generated)
   isEdited     Boolean     @default(false)
   editHistory  Json?
   deletedAt    DateTime?

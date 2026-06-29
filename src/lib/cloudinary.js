@@ -84,9 +84,32 @@ function uploadPdfBuffer(buffer, publicId) {
   });
 }
 
+// batch-4-scheme-upload-signature — signed RAW upload for PDF/DOCX scheme files.
+// Mirrors generateStudentPhotoUploadSignature, but the client posts to
+// /raw/upload (resourceType:'raw' flows that decision to the client). Reads the
+// single CLOUDINARY_UPLOAD_PRESET; the per-call folder overrides the preset's.
+function generateSchemeUploadSignature({ schoolId, classId, subjectId }) {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const cid = classId || 'cls';
+  const sid = subjectId || 'subj';
+  const publicId = `scheme-${schoolId}-${cid}-${sid}-${timestamp}`;
+  const folder = 'klassrun-schemes';
+  const preset = process.env.CLOUDINARY_RAW_PRESET || process.env.CLOUDINARY_UPLOAD_PRESET;
+  const paramsToSign = { folder, public_id: publicId, timestamp, upload_preset: preset };
+  const signature = cloudinary.utils.api_sign_request(paramsToSign, process.env.CLOUDINARY_API_SECRET);
+  return {
+    signature, timestamp,
+    cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+    apiKey: process.env.CLOUDINARY_API_KEY,
+    preset, folder, publicId,
+    resourceType: 'raw',
+  };
+}
+
 module.exports = {
   isConfigured,
   generateLogoUploadSignature,
   generateStudentPhotoUploadSignature,
+  generateSchemeUploadSignature,
   uploadPdfBuffer,
 };

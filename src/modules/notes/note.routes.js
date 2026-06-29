@@ -436,4 +436,158 @@ function termLabel(t) {
   return String(t);
 }
 
+
+// ════════════════════════════════════════════════════════════════════════════
+// batch-4-aligned-note-route — generate a lesson note ALIGNED to an uploaded
+// scheme's week (the Standard-tier product value).
+//
+//   POST /api/notes/generate-aligned   TEACHER
+//   Body: { uploadedSchemeId, week, duration?, additionalNotes? }
+//
+// Pulls the uploaded scheme's week-N as authoritative context, feeds it to the
+// existing generateLessonNote via curriculumContext (NO NERDC lookup here — the
+// uploaded scheme is the sole source of truth). Gated requireActiveForWrites →
+// requirePlan('SCHEME_UPLOAD'), Axis-2 first, DORMANT.
+// ════════════════════════════════════════════════════════════════════════════
+const { buildAlignmentContext } = require('../../lib/anthropic'); // batch-4-aligned-require
+
+router.post('/generate-aligned', authenticate, authorize('TEACHER'), requireActiveForWrites, requirePlan('SCHEME_UPLOAD'), /* gate-1-aligned-note */ async (req, res, next) => {
+  try {
+    const { uploadedSchemeId, week, duration, additionalNotes } = req.body || {};
+
+    if (typeof uploadedSchemeId !== 'string' || !uploadedSchemeId) {
+      return res.status(400).json({ error: { message: 'uploadedSchemeId is required', field: 'uploadedSchemeId' } });
+    }
+    const weekNum = Number(week);
+    if (!Number.isInteger(weekNum) || weekNum < 1 || weekNum > 20) {
+      return res.status(400).json({ error: { message: 'week must be an integer between 1 and 20', field: 'week' } });
+    }
+    let durationVal = 40;
+    if (duration !== undefined && duration !== null && duration !== '') {
+      const n = Number(duration);
+      if (!Number.isInteger(n) || n < 10 || n > 240) {
+        return res.status(400).json({ error: { message: 'Duration must be 10-240 minutes', field: 'duration' } });
+      }
+      durationVal = n;
+    }
+    if (additionalNotes !== undefined && additionalNotes !== null && additionalNotes !== '') {
+      if (typeof additionalNotes !== 'string' || additionalNotes.length > 500) {
+        return res.status(400).json({ error: { message: 'Notes for AI must be a string of at most 500 characters', field: 'additionalNotes' } });
+      }
+    }
+
+    // Billing gate (402 surface, mirrors generate)
+    const gate = await checkGenerationAllowed(req.user.schoolId);
+    if (!gate.ok) {
+      return res.status(402).json({ error: { message: gate.message } });
+    }
+
+    // Resolve the uploaded scheme (school-scoped, must be origin 'uploaded', not deleted)
+    const scheme = await prisma.schemeOfWork.findFirst({
+      where: { id: uploadedSchemeId, schoolId: req.user.schoolId, deletedAt: null },
+      include: {
+        subject: { select: { id: true, name: true, teacherId: true, archivedAt: true } },
+        class:   { select: { id: true, name: true, level: true, archivedAt: true } },
+        session: { select: { id: true, name: true, currentTerm: true } },
+      },
+    });
+    if (!scheme) return res.status(404).json({ error: { message: 'Uploaded scheme not found' } });
+    if (scheme.origin !== 'uploaded') {
+      return res.status(400).json({ error: { message: 'This scheme was not uploaded — use the normal generator for AI schemes.' } });
+    }
+    // Teacher must own the subject this scheme belongs to
+    if (!scheme.subject || scheme.subject.teacherId !== req.user.id) {
+      return res.status(403).json({ error: { message: 'You are not assigned to this subject' } });
+    }
+    if (scheme.subject.archivedAt || (scheme.class && scheme.class.archivedAt)) {
+      return res.status(400).json({ error: { message: 'Subject or class is archived' } });
+    }
+
+    // Pull the chosen week from the scheme content
+    const weeks = (scheme.content && Array.isArray(scheme.content.weeks)) ? scheme.content.weeks : [];
+    const wk = weeks.find((w) => w && w.weekNumber === weekNum);
+    if (!wk) {
+      return res.status(400).json({ error: { message: `Week ${weekNum} is not in this scheme. Add or edit it first.`, field: 'week' } });
+    }
+    if (typeof wk.topic !== 'string' || !wk.topic.trim()) {
+      return res.status(400).json({ error: { message: `Week ${weekNum} has no topic yet. Edit the scheme to add one.`, field: 'week' } });
+    }
+
+    // Build authoritative alignment context (uploaded scheme = source of truth)
+    const alignmentContext = buildAlignmentContext(wk);
+
+    // Need a current session for the note's sessionStamp (use the school's current,
+    // matching the existing generate route convention)
+    const session = await prisma.academicSession.findFirst({
+      where: { schoolId: req.user.schoolId, isCurrent: true },
+    });
+    if (!session) {
+      return res.status(400).json({ error: { message: 'Your school has no current academic session. Ask your admin to set one.' } });
+    }
+
+    // Generate — NO NERDC lookup (uploaded scheme is the sole source of truth)
+    let aiResult;
+    try {
+      aiResult = await generateLessonNote({
+        curriculumContext: alignmentContext,
+        classObj:        { name: scheme.class.name, level: scheme.class.level },
+        subject:         { name: scheme.subject.name },
+        topic:           wk.topic.trim(),
+        week:            weekNum,
+        duration:        durationVal,
+        session:         { name: session.name, currentTerm: session.currentTerm },
+        additionalNotes: additionalNotes,
+        subTopics:       null,
+      });
+    } catch (err) {
+      if (err.code === 'NO_API_KEY') return res.status(503).json({ error: { message: 'AI service is not configured. Contact support.' } });
+      if (err.code === 'AI_REFUSED') return res.status(422).json({ error: { message: 'The AI declined this topic. Try editing the scheme week.' } });
+      if (err.code === 'AI_ERROR_OBJECT') return res.status(422).json({ error: { message: err.detail || 'AI could not generate an aligned note.' } });
+      if (err.code === 'AI_TRANSIENT') return res.status(503).json({ error: { message: 'AI service is busy. Please try again in a minute.' } });
+      if (err.code === 'AI_PERMANENT') return res.status(503).json({ error: { message: 'AI service is misconfigured. Please contact support.' } });
+      if (err.code === 'AI_TRUNCATED') return res.status(422).json({ error: { message: 'The AI ran out of space. Try again, or shorten the scheme week.' } });
+      if (err.code === 'AI_MALFORMED' || err.code === 'AI_INVALID') return res.status(503).json({ error: { message: 'AI returned an unusable response. Please try again.' } });
+      console.error('[POST /api/notes/generate-aligned] AI call failed:', { code: err && err.code, message: err && err.message });
+      return res.status(503).json({ error: { message: 'AI service temporarily unavailable. Please try again.' } });
+    }
+
+    // Persist BEFORE responding — a normal LessonNote, stamped with alignment provenance
+    const sessionStamp = `${session.name} · ${termLabel(session.currentTerm)}`;
+    const contentWithMeta = {
+      ...aiResult.content,
+      _metadata: {
+        model:        aiResult.model,
+        inputTokens:  aiResult.inputTokens,
+        outputTokens: aiResult.outputTokens,
+        generatedAt:  aiResult.generatedAt,
+        alignedToSchemeId: scheme.id,
+        alignedToWeek:     weekNum,
+      },
+    };
+
+    const note = await prisma.lessonNote.create({
+      data: {
+        topic:     wk.topic.trim(),
+        week:      weekNum,
+        content:   contentWithMeta,
+        sessionStamp,
+        schoolId:  req.user.schoolId,
+        teacherId: req.user.id,
+        classId:   scheme.classId,
+        subjectId: scheme.subjectId,
+        sessionId: session.id,
+      },
+    });
+
+    recordAcademicEvent('ALIGNED_NOTE_GENERATED', {
+      schoolId: req.user.schoolId, actorId: req.user.id,
+      metadata: { noteId: note.id, schemeId: scheme.id, week: weekNum, model: aiResult.model },
+    });
+
+    return res.status(201).json({ note });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

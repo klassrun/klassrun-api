@@ -379,4 +379,228 @@ router.delete('/:id', authenticate, requireActiveForWrites, /* gate-1-schemes-de
   }
 });
 
+
+// ════════════════════════════════════════════════════════════════════════════
+// batch-4-scheme-upload-routes — Scheme Upload + Alignment (Standard tier)
+//
+//   POST /api/schemes/upload-signature  TEACHER — signed Cloudinary RAW upload
+//   POST /api/schemes/upload            TEACHER — record uploaded file, fetch,
+//                                       extract text, parse to weeks, persist
+//
+// Gated requireActiveForWrites → requirePlan('SCHEME_UPLOAD'), Axis-2 first,
+// DORMANT (GATING_MODE observe). Persist-before-respond. Multi-tenant scoped.
+// On failed parse we PERSIST an editable empty scheme (parseStatus 'failed')
+// so the teacher can enter weeks by hand — never silently trust a parse.
+// ════════════════════════════════════════════════════════════════════════════
+
+const cloudinaryLib_b4 = require('../../lib/cloudinary');
+const { parseSchemeFromText } = require('../../lib/anthropic');
+
+const SCHEME_UPLOAD_MAX_BYTES = 10 * 1024 * 1024; // 10MB
+const SCHEME_MIN_TEXT = 40; // below this we treat the file as unreadable
+
+// Fetch a (public) Cloudinary raw URL → Buffer, server-side.
+async function _fetchToBuffer(url) {
+  const resp = await fetch(url);
+  if (!resp || !resp.ok) {
+    const e = new Error('Could not fetch uploaded file (' + (resp ? resp.status : 'no response') + ')');
+    e.code = 'FETCH_FAILED';
+    throw e;
+  }
+  const ab = await resp.arrayBuffer();
+  return Buffer.from(ab);
+}
+
+// Extract plain text from a PDF/DOCX buffer. Parser throws (corrupt/scanned
+// PDFs) become '' — caller treats short/empty uniformly as "unreadable".
+async function _extractSchemeText(buffer, kind) {
+  try {
+    if (kind === 'pdf') {
+      const { PDFParse } = require('pdf-parse');
+      const parser = new PDFParse({ data: buffer });
+      const r = await parser.getText();
+      if (parser.destroy) { try { await parser.destroy(); } catch (_) {} }
+      return (r && r.text ? r.text : '').trim();
+    }
+    if (kind === 'docx') {
+      const mammoth = require('mammoth');
+      const r = await mammoth.extractRawText({ buffer });
+      return (r && r.value ? r.value : '').trim();
+    }
+    return '';
+  } catch (e) {
+    console.error('[scheme upload] extract failed (' + kind + '):', e.message);
+    return '';
+  }
+}
+
+function _kindFromName(name) {
+  const n = String(name || '').toLowerCase();
+  if (n.endsWith('.pdf')) return 'pdf';
+  if (n.endsWith('.docx')) return 'docx';
+  return null;
+}
+
+// ── POST /api/schemes/upload-signature ───────────────────────────────────
+router.post('/upload-signature', authenticate, authorize('TEACHER'), requireActiveForWrites, requirePlan('SCHEME_UPLOAD'), /* gate-1-scheme-upload-sig */ async (req, res, next) => {
+  try {
+    if (!cloudinaryLib_b4.isConfigured || !cloudinaryLib_b4.isConfigured()) {
+      return res.status(503).json({ error: { message: 'File upload is not configured. Contact support.' } });
+    }
+    const classId   = (req.body && typeof req.body.classId   === 'string') ? req.body.classId   : null;
+    const subjectId = (req.body && typeof req.body.subjectId === 'string') ? req.body.subjectId : null;
+    const sig = cloudinaryLib_b4.generateSchemeUploadSignature({
+      schoolId: req.user.schoolId, classId, subjectId,
+    });
+    return res.json({ signature: sig });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /api/schemes/upload ─────────────────────────────────────────────
+// Body: { classId, subjectId, fileUrl, fileName }
+router.post('/upload', authenticate, authorize('TEACHER'), requireActiveForWrites, requirePlan('SCHEME_UPLOAD'), /* gate-1-scheme-upload */ async (req, res, next) => {
+  try {
+    const { classId, subjectId, fileUrl, fileName } = req.body || {};
+
+    if (typeof classId !== 'string' || !classId) {
+      return res.status(400).json({ error: { message: 'classId is required', field: 'classId' } });
+    }
+    if (typeof subjectId !== 'string' || !subjectId) {
+      return res.status(400).json({ error: { message: 'subjectId is required', field: 'subjectId' } });
+    }
+    if (typeof fileUrl !== 'string' || !/^https:\/\/res\.cloudinary\.com\//.test(fileUrl)) {
+      return res.status(400).json({ error: { message: 'A valid uploaded fileUrl is required', field: 'fileUrl' } });
+    }
+    const kind = _kindFromName(fileName);
+    if (!kind) {
+      return res.status(400).json({ error: { message: 'Only .pdf and .docx files are supported', field: 'fileName' } });
+    }
+
+    // Billing gate (mirror existing generate routes — 402 surface)
+    const gate = await checkGenerationAllowed(req.user.schoolId);
+    if (!gate.ok) {
+      return res.status(402).json({ error: { message: gate.message } });
+    }
+
+    // Authorization — teacher owns subject; subject + class active
+    const subject = await prisma.subject.findFirst({
+      where: { id: subjectId, schoolId: req.user.schoolId, archivedAt: null },
+      include: { class: { select: { id: true, name: true, level: true, archivedAt: true } } },
+    });
+    if (!subject) return res.status(404).json({ error: { message: 'Subject not found or archived' } });
+    if (!subject.class || subject.class.archivedAt) {
+      return res.status(400).json({ error: { message: 'Parent class is archived' } });
+    }
+    if (subject.classId !== classId) {
+      return res.status(400).json({ error: { message: 'Subject does not belong to this class', field: 'classId' } });
+    }
+    if (subject.teacherId !== req.user.id) {
+      return res.status(403).json({ error: { message: 'You are not assigned to this subject' } });
+    }
+
+    // Current session
+    const session = await prisma.academicSession.findFirst({
+      where: { schoolId: req.user.schoolId, isCurrent: true },
+    });
+    if (!session) {
+      return res.status(400).json({ error: { message: 'Your school has no current academic session. Ask your admin to set one.' } });
+    }
+
+    // Fetch + extract text
+    let buffer;
+    try {
+      buffer = await _fetchToBuffer(fileUrl);
+    } catch (e) {
+      return res.status(502).json({ error: { message: 'Could not retrieve the uploaded file. Please try uploading again.' } });
+    }
+    if (buffer.length > SCHEME_UPLOAD_MAX_BYTES) {
+      return res.status(413).json({ error: { message: 'File is too large (max 10MB).' } });
+    }
+
+    const rawText = await _extractSchemeText(buffer, kind);
+    const sessionStamp = `${session.name} · ${termLabel(session.currentTerm)}`;
+    const fallbackTitle = `${subject.class.name} ${subject.name} — Uploaded scheme`;
+
+    // Unreadable file (scanned image PDF, corrupt, empty) → 422, persist nothing.
+    if (!rawText || rawText.length < SCHEME_MIN_TEXT) {
+      recordAcademicEvent('SCHEME_UPLOAD_FAILED', {
+        schoolId: req.user.schoolId, actorId: req.user.id,
+        metadata: { reason: 'unreadable', fileName, classId, subjectId },
+      });
+      return res.status(422).json({
+        error: { message: "We couldn't read text from this file — it may be a scanned image. Try a text-based PDF or a DOCX." },
+      });
+    }
+
+    // Parse → structured weeks. On parse failure persist an EDITABLE EMPTY
+    // scheme (parseStatus 'failed') so the teacher can enter weeks by hand.
+    let parsedContent = null;
+    let parseStatus = 'parsed';
+    try {
+      const parsed = await parseSchemeFromText({
+        classObj: { name: subject.class.name, level: subject.class.level },
+        subject:  { name: subject.name },
+        rawText,
+        fallbackTitle,
+      });
+      parsedContent = parsed.content;
+    } catch (err) {
+      if (err.code === 'NO_API_KEY') {
+        return res.status(503).json({ error: { message: 'AI service is not configured. Contact support.' } });
+      }
+      // not-a-scheme / malformed / invalid / truncated / transient → persist editable empty
+      console.error('[scheme upload] parse failed, persisting editable empty:', err.code, err.message);
+      parseStatus = 'failed';
+      parsedContent = {
+        title: fallbackTitle,
+        subject: subject.name,
+        class: subject.class.name,
+        term: '',
+        overview: '',
+        weeks: [],
+        _parseError: err.code || 'PARSE_FAILED',
+      };
+    }
+
+    // Persist BEFORE responding
+    const contentWithMeta = {
+      ...parsedContent,
+      _metadata: {
+        origin: 'uploaded',
+        parseStatus,
+        sourceFileName: fileName,
+        parsedAt: new Date().toISOString(),
+      },
+    };
+
+    const scheme = await prisma.schemeOfWork.create({
+      data: {
+        title:          parsedContent.title || fallbackTitle,
+        content:        contentWithMeta,
+        sessionStamp,
+        schoolId:       req.user.schoolId,
+        teacherId:      req.user.id,
+        classId:        subject.classId,
+        subjectId:      subject.id,
+        sessionId:      session.id,
+        origin:         'uploaded',
+        sourceFileUrl:  fileUrl,
+        sourceFileName: fileName,
+        parseStatus,
+      },
+    });
+
+    recordAcademicEvent(parseStatus === 'parsed' ? 'SCHEME_UPLOADED' : 'SCHEME_UPLOAD_FAILED', {
+      schoolId: req.user.schoolId, actorId: req.user.id,
+      metadata: { schemeId: scheme.id, subjectId: subject.id, classId: subject.classId, parseStatus, weekCount: (parsedContent.weeks || []).length, fileName },
+    });
+
+    return res.status(201).json({ scheme, parseStatus });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;
