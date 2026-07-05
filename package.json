@@ -37,6 +37,8 @@
     "express": "^5.2.1",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.3",
+    "mammoth": "^1.8.0",
+    "pdf-parse": "^2.4.5",
     "pdfkit": "^0.18.0",
     "pg": "^8.20.0",
     "resend": "^4.8.0",
