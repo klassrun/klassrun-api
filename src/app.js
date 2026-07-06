@@ -107,6 +107,7 @@ app.use('/api/behaviour',             behaviourRoutes); // ops-2-routes-mount
 app.use('/api/report-cards/comments', reportCardCommentRoutes); // ops-2-routes-mount (must precede /api/report-cards)
 app.use('/api/report-cards', reportCardRoutes); // ops-1-routes-mount
 app.use('/api/billing',     require('./modules/billing/billing.routes')); // pay-1-billing-mount
+app.use('/api/analytics', require('./modules/analytics/analytics.routes')); // batch-6-analytics-mount
 
 // ── 404 (must come before the error handler) ────────────────────────────────
 app.use((req, res) => {
