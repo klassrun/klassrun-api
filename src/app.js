@@ -109,6 +109,7 @@ app.use('/api/report-cards', reportCardRoutes); // ops-1-routes-mount
 app.use('/api/billing',     require('./modules/billing/billing.routes')); // pay-1-billing-mount
 app.use('/api/analytics', require('./modules/analytics/analytics.routes')); // batch-6-analytics-mount
 app.use('/api/leads', require('./modules/leads/lead.routes')); // leads-capture-mount
+app.use('/api/admin', require('./modules/admin/admin.routes')); // superadmin-mvp-mount
 
 // ── 404 (must come before the error handler) ────────────────────────────────
 app.use((req, res) => {
