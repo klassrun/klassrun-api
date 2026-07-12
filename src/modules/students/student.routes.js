@@ -49,6 +49,21 @@ function optDate(value) {
   return { ok: true, value: d };
 }
 
+// bugfix-age-dob-v1 — DOB stays OPTIONAL; when provided it must be credible:
+// a real date, in the past, age between 2 and 30 years at entry. Composes
+// optDate so null/undefined/format handling stays in one place.
+function optDob(value) {
+  const base = optDate(value);
+  if (!base.ok || base.value === undefined || base.value === null) return base;
+  const d = base.value;
+  const now = new Date();
+  if (d.getTime() > now.getTime()) return { ok: false, error: 'Date of birth cannot be in the future' };
+  const ageYears = (now.getTime() - d.getTime()) / (365.25 * 24 * 60 * 60 * 1000);
+  if (ageYears < 2) return { ok: false, error: 'Student must be at least 2 years old — check the date of birth' };
+  if (ageYears > 30) return { ok: false, error: 'Student age must be 30 or under — check the date of birth' };
+  return { ok: true, value: d };
+}
+
 // ── GET / (list) ──────────────────────────────────────────────────────────
 router.get('/', authenticate, async (req, res, next) => {
   try {
@@ -118,7 +133,7 @@ router.post('/', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites
     if (!gPhone.ok) return res.status(400).json({ error: { message: gPhone.error, field: 'guardianPhone' } });
     const gEmail = optString(body.guardianEmail, 120);
     if (!gEmail.ok) return res.status(400).json({ error: { message: gEmail.error, field: 'guardianEmail' } });
-    const dob = optDate(body.dateOfBirth);
+    const dob = optDob(body.dateOfBirth); // bugfix-age-dob-v1
     if (!dob.ok) return res.status(400).json({ error: { message: dob.error, field: 'dateOfBirth' } });
     const gender = optString(body.gender, 12);
     if (!gender.ok) return res.status(400).json({ error: { message: gender.error, field: 'gender' } });
@@ -204,7 +219,7 @@ router.patch('/:id', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWr
       data[key] = c.value;
     }
     if ('dateOfBirth' in body) {
-      const c = optDate(body.dateOfBirth);
+      const c = optDob(body.dateOfBirth); // bugfix-age-dob-v1
       if (!c.ok) return res.status(400).json({ error: { message: c.error, field: 'dateOfBirth' } });
       data.dateOfBirth = c.value;
     }
