@@ -154,6 +154,31 @@ router.post('/generate', authenticate, authorize('TEACHER'), requireActiveForWri
     }
 
     // ── Call AI ──
+    // bugfix-dedup-copy-v1: duplicate guard BEFORE the AI call, so a
+    // duplicate costs zero tokens. Same topic + class + subject + term
+    // (sessionStamp) + same teacher, not deleted = duplicate.
+    const dupStamp = `${session.name} · ${termLabel(session.currentTerm)}`;
+    const dupNote = await prisma.lessonNote.findFirst({
+      where: {
+        schoolId: req.user.schoolId,
+        teacherId: req.user.id,
+        classId: subject.classId,
+        subjectId: subject.id,
+        sessionStamp: dupStamp,
+        deletedAt: null,
+        topic: { equals: topic.trim(), mode: 'insensitive' },
+      },
+      select: { id: true, topic: true, week: true, createdAt: true },
+    });
+    if (dupNote) {
+      return res.status(409).json({
+        error: {
+          message: `A note for "${dupNote.topic}" already exists for this class, subject and term. Open it, or delete it and regenerate.`,
+          code: 'DUPLICATE_NOTE',
+        },
+        existingNote: dupNote,
+      });
+    }
     let aiResult;
     try {
       // batch-3-phase-3d-curriculum-lookup
@@ -526,6 +551,29 @@ router.post('/generate-aligned', authenticate, authorize('TEACHER'), requireActi
     }
 
     // Generate — NO NERDC lookup (uploaded scheme is the sole source of truth)
+    // bugfix-dedup-copy-v1: same duplicate guard as /generate (zero-token dupes)
+    const dupStamp = `${session.name} · ${termLabel(session.currentTerm)}`;
+    const dupNote = await prisma.lessonNote.findFirst({
+      where: {
+        schoolId: req.user.schoolId,
+        teacherId: req.user.id,
+        classId: scheme.classId,
+        subjectId: scheme.subjectId,
+        sessionStamp: dupStamp,
+        deletedAt: null,
+        topic: { equals: wk.topic.trim(), mode: 'insensitive' },
+      },
+      select: { id: true, topic: true, week: true, createdAt: true },
+    });
+    if (dupNote) {
+      return res.status(409).json({
+        error: {
+          message: `A note for "${dupNote.topic}" already exists for this class, subject and term. Open it, or delete it and regenerate.`,
+          code: 'DUPLICATE_NOTE',
+        },
+        existingNote: dupNote,
+      });
+    }
     let aiResult;
     try {
       aiResult = await generateLessonNote({
@@ -582,6 +630,136 @@ router.post('/generate-aligned', authenticate, authorize('TEACHER'), requireActi
     recordAcademicEvent('ALIGNED_NOTE_GENERATED', {
       schoolId: req.user.schoolId, actorId: req.user.id,
       metadata: { noteId: note.id, schemeId: scheme.id, week: weekNum, model: aiResult.model },
+    });
+
+    return res.status(201).json({ note });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// bugfix-dedup-copy-v1
+// Copy a lesson note to another class arm, ZERO AI cost.
+//
+//   POST /api/notes/:id/duplicate   TEACHER
+//   Body: { classId }  (the target class)
+//
+// The teacher must own a same-named subject in the target class. The copy
+// is stamped into the CURRENT session/term, keeps topic + week, swaps the
+// class name inside the content, records provenance in _metadata, and
+// passes the same duplicate guard as /generate. Gated requireActiveForWrites
+// plus the billing gate (402 parity with generate).
+router.post('/:id/duplicate', authenticate, authorize('TEACHER'), requireActiveForWrites, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const targetClassId = req.body && typeof req.body.classId === 'string' ? req.body.classId.trim() : '';
+    if (!targetClassId) {
+      return res.status(400).json({ error: { message: 'classId (target class) is required', field: 'classId' } });
+    }
+
+    const gate = await checkGenerationAllowed(req.user.schoolId);
+    if (!gate.ok) {
+      return res.status(402).json({ error: { message: gate.message } });
+    }
+
+    const source = await prisma.lessonNote.findFirst({
+      where: { id, schoolId: req.user.schoolId, teacherId: req.user.id, deletedAt: null },
+      include: {
+        subject: { select: { id: true, name: true } },
+        class:   { select: { id: true, name: true } },
+      },
+    });
+    if (!source) return res.status(404).json({ error: { message: 'Lesson note not found' } });
+    if (source.classId === targetClassId) {
+      return res.status(400).json({ error: { message: 'Pick a different class, the note is already in this one', field: 'classId' } });
+    }
+
+    const targetClass = await prisma.class.findFirst({
+      where: { id: targetClassId, schoolId: req.user.schoolId },
+      select: { id: true, name: true, level: true, archivedAt: true },
+    });
+    if (!targetClass) return res.status(404).json({ error: { message: 'Target class not found', field: 'classId' } });
+    if (targetClass.archivedAt) {
+      return res.status(400).json({ error: { message: 'Cannot copy into an archived class', field: 'classId' } });
+    }
+
+    const targetSubject = await prisma.subject.findFirst({
+      where: {
+        schoolId: req.user.schoolId,
+        classId: targetClass.id,
+        archivedAt: null,
+        teacherId: req.user.id,
+        name: { equals: source.subject.name, mode: 'insensitive' },
+      },
+      select: { id: true, name: true },
+    });
+    if (!targetSubject) {
+      return res.status(403).json({
+        error: { message: `You are not assigned to ${source.subject.name} in ${targetClass.name}` },
+      });
+    }
+
+    const session = await prisma.academicSession.findFirst({
+      where: { schoolId: req.user.schoolId, isCurrent: true },
+    });
+    if (!session) {
+      return res.status(400).json({ error: { message: 'Your school has no current academic session. Ask your admin to set one.' } });
+    }
+    const sessionStamp = `${session.name} · ${termLabel(session.currentTerm)}`;
+
+    const dupNote = await prisma.lessonNote.findFirst({
+      where: {
+        schoolId: req.user.schoolId,
+        teacherId: req.user.id,
+        classId: targetClass.id,
+        subjectId: targetSubject.id,
+        sessionStamp,
+        deletedAt: null,
+        topic: { equals: source.topic, mode: 'insensitive' },
+      },
+      select: { id: true, topic: true, week: true, createdAt: true },
+    });
+    if (dupNote) {
+      return res.status(409).json({
+        error: {
+          message: `"${dupNote.topic}" already exists in ${targetClass.name} for this term. Open it, or delete it first.`,
+          code: 'DUPLICATE_NOTE',
+        },
+        existingNote: dupNote,
+      });
+    }
+
+    // Clone content: swap the class name, keep everything else, stamp provenance.
+    const content = JSON.parse(JSON.stringify(source.content || {}));
+    if (typeof content.class === 'string') content.class = targetClass.name;
+    if (typeof content.title === 'string' && source.class && source.class.name) {
+      content.title = content.title.split(source.class.name).join(targetClass.name); // best-effort
+    }
+    content._metadata = {
+      ...(content._metadata && typeof content._metadata === 'object' ? content._metadata : {}),
+      copiedFromNoteId: source.id,
+      copiedAt: new Date().toISOString(),
+    };
+
+    const note = await prisma.lessonNote.create({
+      data: {
+        topic:        source.topic,
+        week:         source.week,
+        content,
+        sessionStamp,
+        schoolId:     req.user.schoolId,
+        teacherId:    req.user.id,
+        classId:      targetClass.id,
+        subjectId:    targetSubject.id,
+        sessionId:    session.id,
+      },
+    });
+
+    // Audit: reuse the existing enum value with copy metadata (no migration).
+    recordAcademicEvent('LESSON_NOTE_GENERATED', {
+      schoolId: req.user.schoolId,
+      actorId:  req.user.id,
+      metadata: { noteId: note.id, copy: true, copiedFromNoteId: source.id, classId: targetClass.id, subjectId: targetSubject.id, topic: source.topic },
     });
 
     return res.status(201).json({ note });
