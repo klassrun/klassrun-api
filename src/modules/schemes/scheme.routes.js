@@ -142,6 +142,30 @@ router.post('/generate', authenticate, authorize('TEACHER'), requireActiveForWri
       });
     }
 
+    // bugfix-scheme-dedup-v1: duplicate guard BEFORE the AI call. One scheme
+    // per class + subject + term (any origin); a duplicate costs zero tokens.
+    const dupStamp = `${session.name} · ${termLabel(session.currentTerm)}`;
+    const dupScheme = await prisma.schemeOfWork.findFirst({
+      where: {
+        schoolId: req.user.schoolId,
+        teacherId: req.user.id,
+        classId: subject.classId,
+        subjectId: subject.id,
+        sessionStamp: dupStamp,
+        deletedAt: null,
+      },
+      select: { id: true, title: true, origin: true, createdAt: true },
+    });
+    if (dupScheme) {
+      return res.status(409).json({
+        error: {
+          message: `A scheme of work for this class and subject already exists this term (origin: ${dupScheme.origin}). Open it, or delete it and regenerate.`,
+          code: 'DUPLICATE_SCHEME',
+        },
+        existingScheme: dupScheme,
+      });
+    }
+
     // Call AI
     let aiResult;
     try {
@@ -506,6 +530,30 @@ router.post('/upload', authenticate, authorize('TEACHER'), requireActiveForWrite
     });
     if (!session) {
       return res.status(400).json({ error: { message: 'Your school has no current academic session. Ask your admin to set one.' } });
+    }
+
+    // bugfix-scheme-dedup-v1: duplicate guard BEFORE the file fetch + AI
+    // parse. One scheme per class + subject + term (any origin).
+    const dupStamp = `${session.name} · ${termLabel(session.currentTerm)}`;
+    const dupScheme = await prisma.schemeOfWork.findFirst({
+      where: {
+        schoolId: req.user.schoolId,
+        teacherId: req.user.id,
+        classId: subject.classId,
+        subjectId: subject.id,
+        sessionStamp: dupStamp,
+        deletedAt: null,
+      },
+      select: { id: true, title: true, origin: true, createdAt: true },
+    });
+    if (dupScheme) {
+      return res.status(409).json({
+        error: {
+          message: `A scheme of work for this class and subject already exists this term (origin: ${dupScheme.origin}). Open it, or delete it before uploading a new one.`,
+          code: 'DUPLICATE_SCHEME',
+        },
+        existingScheme: dupScheme,
+      });
     }
 
     // Fetch + extract text
