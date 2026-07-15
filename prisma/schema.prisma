@@ -62,6 +62,8 @@ model School {
   customDomain String?      @unique // future white-label tier
   status       SchoolStatus @default(PROVISIONING)
   slugLockedAt DateTime? // set after 30 days of activity
+  // fix3-admission-v1: short code for auto-generated admission numbers (PREFIX/YEAR/NNN)
+  admissionPrefix String?
   // ───────────────────────────────
 
   createdAt DateTime @default(now())

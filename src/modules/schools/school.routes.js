@@ -38,7 +38,7 @@ router.patch('/me', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, ne
 
     // Allowlist — anything not in this set is silently dropped.
     // batch-2b-logo-allowlist
-    const allowed = ['name', 'address', 'state', 'phone', 'contactEmail', 'motto', 'rcNumber', 'logoUrl'];
+    const allowed = ['name', 'address', 'state', 'phone', 'contactEmail', 'motto', 'rcNumber', 'logoUrl', 'admissionPrefix']; // fix3-admission-v1
     const data = {};
 
     for (const key of allowed) {
@@ -67,6 +67,15 @@ router.patch('/me', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, ne
 
     if (data.motto && data.motto.length > 200) {
       return res.status(400).json({ error: { message: 'Motto must be 200 characters or fewer' } });
+    }
+
+    // fix3-admission-v1: short code used when auto-generating admission numbers
+    if ('admissionPrefix' in data && data.admissionPrefix !== null) {
+      const p = String(data.admissionPrefix).toUpperCase();
+      if (!/^[A-Z0-9]{2,6}$/.test(p)) {
+        return res.status(400).json({ error: { message: 'Admission prefix must be 2-6 letters or digits (e.g. GIC)', field: 'admissionPrefix' } });
+      }
+      data.admissionPrefix = p;
     }
 
     if (Object.keys(data).length === 0) {

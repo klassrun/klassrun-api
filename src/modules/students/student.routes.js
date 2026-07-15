@@ -24,6 +24,37 @@ const cloudinaryLib = require('../../lib/cloudinary');
 const MAX_NAME = 60;
 const MAX_ADMISSION = 40;
 
+// fix3-admission-v1: auto-generate the next admission number for a school.
+// PREFIX/YEAR/NNN. Prefix = School.admissionPrefix, else initials from the
+// school name, else 'SCH'. Existing numbers are never reformatted.
+function derivePrefix(school) {
+  const p = school && typeof school.admissionPrefix === 'string' ? school.admissionPrefix.trim() : '';
+  if (p) return p.toUpperCase();
+  const name = (school && school.name) || '';
+  const initials = name.split(/\s+/).map((w) => w[0] || '').join('').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
+  return initials || 'SCH';
+}
+async function nextAdmissionNumber(schoolId) {
+  const school = await prisma.school.findUnique({
+    where: { id: schoolId },
+    select: { name: true, admissionPrefix: true },
+  });
+  const prefix = derivePrefix(school);
+  const year = new Date().getFullYear();
+  const stem = prefix + '/' + year + '/';
+  const last = await prisma.student.findFirst({
+    where: { schoolId, admissionNumber: { startsWith: stem } },
+    orderBy: { admissionNumber: 'desc' },
+    select: { admissionNumber: true },
+  });
+  let n = 1;
+  if (last) {
+    const tail = parseInt(last.admissionNumber.slice(stem.length), 10);
+    if (Number.isInteger(tail) && tail >= n) n = tail + 1;
+  }
+  return { stem, n };
+}
+
 function reqString(value, label, max) {
   if (typeof value !== 'string') return { ok: false, error: `${label} is required` };
   const trimmed = value.trim();
@@ -104,8 +135,14 @@ router.post('/', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites
   try {
     const body = req.body || {};
 
-    const adm = reqString(body.admissionNumber, 'Admission number', MAX_ADMISSION);
-    if (!adm.ok) return res.status(400).json({ error: { message: adm.error, field: 'admissionNumber' } });
+    // fix3-admission-v1: admission number is OPTIONAL on create.
+    // Blank/absent -> auto-generated as PREFIX/YEAR/NNN at insert time.
+    let admissionNumberVal = null;
+    if (body.admissionNumber !== undefined && body.admissionNumber !== null && String(body.admissionNumber).trim() !== '') {
+      const adm = reqString(body.admissionNumber, 'Admission number', MAX_ADMISSION);
+      if (!adm.ok) return res.status(400).json({ error: { message: adm.error, field: 'admissionNumber' } });
+      admissionNumberVal = adm.value;
+    }
 
     const fn = reqString(body.firstName, 'First name', MAX_NAME);
     if (!fn.ok) return res.status(400).json({ error: { message: fn.error, field: 'firstName' } });
@@ -141,7 +178,7 @@ router.post('/', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites
     if (!photo.ok) return res.status(400).json({ error: { message: photo.error, field: 'photoUrl' } });
 
     const data = {
-      admissionNumber: adm.value,
+      admissionNumber: admissionNumberVal, // fix3-admission-v1: null -> auto-generated below
       firstName: fn.value,
       lastName: ln.value,
       schoolId: req.user.schoolId,
@@ -155,11 +192,33 @@ router.post('/', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites
     if (gender.value !== undefined) data.gender = gender.value;
     if (photo.value !== undefined) data.photoUrl = photo.value;
 
+    // fix3-admission-v1: resolve auto-generated admission numbers with a
+    // collision retry on the existing @@unique([schoolId, admissionNumber]).
+    let created = null;
+    const autoGen = admissionNumberVal === null;
+    const seq = autoGen ? await nextAdmissionNumber(req.user.schoolId) : null;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      if (autoGen) data.admissionNumber = seq.stem + String(seq.n + attempt).padStart(3, '0');
+      try {
+        created = await prisma.student.create({
+          data,
+          include: { class: { select: { id: true, name: true } } },
+        });
+        break;
+      } catch (e) {
+        if (e?.code === 'P2002') {
+          if (autoGen && attempt < 5) continue;
+          return res.status(409).json({
+            error: { message: 'A student with that admission number already exists', field: 'admissionNumber' },
+          });
+        }
+        throw e;
+      }
+    }
+    if (!created) {
+      return res.status(409).json({ error: { message: 'Could not allocate an admission number. Try again.', field: 'admissionNumber' } });
+    }
     try {
-      const created = await prisma.student.create({
-        data,
-        include: { class: { select: { id: true, name: true } } },
-      });
 
       recordAcademicEvent('STUDENT_CREATED', {
         schoolId: req.user.schoolId,
