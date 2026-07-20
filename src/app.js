@@ -71,6 +71,7 @@ const corsOptions = {
 // ── MIDDLEWARE ──────────────────────────────────────────────────────────────
 app.use(helmet());
 app.use(cors(corsOptions));
+require('./lib/boot-report')(); // pay2-hardening-v1-boot
 app.use('/api/billing/webhook', express.raw({ type: '*/*' }), require('./modules/billing/billing.webhook')); // pay-1-webhook-mount
 app.use(express.json({ limit: '2mb' })); // perf: 10mb let anyone POST huge bodies anywhere
 

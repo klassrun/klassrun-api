@@ -1,22 +1,27 @@
 // src/modules/billing/billing.webhook.js
-// pay-1-billing-webhook
+// pay-1-billing-webhook + pay2-hardening-v1
 //
 // Public endpoint. MOUNTED WITH express.raw BEFORE express.json (req.body is a
 // Buffer) so the HMAC signature can be verified over the exact raw bytes.
-// Paystack retries until it gets a 2xx, so:
-//   - transient failure (Paystack API down) -> 500 (let it retry)
-//   - terminal failure  (underpaid / bad metadata) -> 200 (stop retrying)
-//   - success / ignored event -> 200
+//
+// pay2-hardening-v1: the error handling is INVERTED. Before, only a named
+// TRANSIENT set returned 500 and every unknown failure was acked 200 - so a
+// database blip mid-webhook silently swallowed a real payment (Paystack
+// stopped retrying; the school paid and stayed on trial). Now only
+// KNOWN-terminal codes are acked 200; every unknown failure returns 500 so
+// Paystack retries (every 3 minutes x4, then hourly for 72 hours). For
+// transfer/USSD payers who never return to the callback page, this webhook
+// is the ONLY activator - it must never lie about having processed a payment.
 
 const paystack = require('../../lib/paystack');
 const { activateFromReference } = require('./billing.activate');
 
-const TRANSIENT = new Set(['PAYSTACK_VERIFY_FAILED', 'NO_PAYSTACK_KEY']);
+const TERMINAL = new Set(['PAY_NO_REF', 'PAY_BAD_METADATA', 'PAY_UNDERPAID', 'PAY_NO_SUB', 'PAY_BAD_CURRENCY']);
 
 async function billingWebhook(req, res) {
   const raw = req.body;
   if (!Buffer.isBuffer(raw)) {
-    console.error('[billing/webhook] body is not a raw Buffer — check mount order (must precede express.json)');
+    console.error('[billing/webhook] body is not a raw Buffer - check mount order (must precede express.json)');
     return res.sendStatus(400);
   }
 
@@ -37,12 +42,12 @@ async function billingWebhook(req, res) {
     console.log('[billing/webhook] charge.success', event.data.reference, JSON.stringify(result));
     return res.sendStatus(200);
   } catch (err) {
-    if (TRANSIENT.has(err.code)) {
-      console.error('[billing/webhook] transient — Paystack will retry:', err.code, err.message);
-      return res.sendStatus(500);
+    if (TERMINAL.has(err.code)) {
+      console.error('[billing/webhook] terminal (acked, investigate):', err.code, err.message);
+      return res.sendStatus(200);
     }
-    console.error('[billing/webhook] terminal (acked):', err.code || err.message);
-    return res.sendStatus(200);
+    console.error('[billing/webhook] retryable - Paystack will retry:', err.code || err.message);
+    return res.sendStatus(500);
   }
 }
 

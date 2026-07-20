@@ -1,24 +1,41 @@
 // src/modules/billing/billing.activate.js
-// pay-1-billing-activate
+// pay-1-billing-activate + pay2-hardening-v1
 //
 // Shared activation logic used by BOTH the webhook (primary, production) and
-// the verify endpoint (backup — also lets us test with test keys locally,
-// where Paystack can't reach a localhost webhook). Idempotent on reference.
+// the verify endpoint (backup). Idempotent on reference.
+//
+// pay2-hardening-v1 (monthly billing):
+//   - Every successful payment buys a fixed period (BILLING_PERIOD_DAYS env,
+//     default 30). The old session-end anchor is gone: sessions are school
+//     years, prices are per month.
+//   - NEVER-SHRINK: if the school still has paid time left, the new endDate
+//     is old endDate + period, so stacking payments = prepaying months. A
+//     lapsed or trial school anchors from now. A payment can never leave the
+//     endDate where it was.
+//   - Naira only: any other currency is terminal (PAY_BAD_CURRENCY).
+//   - Price-config guard: a broken PRICE_* env can never silently activate
+//     (PAY_PRICE_CONFIG is retryable, so Paystack keeps redelivering while
+//     the env is fixed - the payment is never lost).
 
 const prisma = require('../../config/db');
 const paystack = require('../../lib/paystack');
 
-// Paid term ends when the current academic session ends — but sessions have
-// NULLABLE dates, so we guard: only use the session end when it exists AND is
-// in the future, else fall back to now+120d. A payment must never land a
-// school in an already-expired state.
-function resolveEndDate(session) {
-  const fallback = new Date(Date.now() + 120 * 24 * 60 * 60 * 1000);
-  if (session && session.endDate) {
-    const end = new Date(session.endDate);
-    if (end.getTime() > Date.now()) return end;
-  }
-  return fallback;
+const PERIOD_DAYS = (function () {
+  const n = Number(process.env.BILLING_PERIOD_DAYS);
+  return Number.isInteger(n) && n >= 1 && n <= 366 ? n : 30;
+})();
+const PERIOD_MS = PERIOD_DAYS * 24 * 60 * 60 * 1000;
+
+// New endDate for a successful payment. sub is the current Subscription row.
+// pay2-hardening-v1: period-based and never-shrink.
+function resolveEndDate(sub) {
+  const now = Date.now();
+  const paidTimeLeft = !!sub
+    && (sub.status === 'ACTIVE' || sub.status === 'PAST_DUE')
+    && sub.endDate
+    && new Date(sub.endDate).getTime() > now;
+  const base = paidTimeLeft ? new Date(sub.endDate).getTime() : now;
+  return new Date(base + PERIOD_MS);
 }
 
 async function activateFromReference(reference) {
@@ -34,6 +51,13 @@ async function activateFromReference(reference) {
     return { activated: false, alreadyProcessed: false, status: txn ? txn.status : 'unknown' };
   }
 
+  // pay2-hardening-v1: naira only. A "success" in any other currency must
+  // never deliver value (terminal: acked, logged, investigated by hand).
+  if (txn.currency !== 'NGN') {
+    const e = new Error('Unexpected currency ' + txn.currency + ' on ' + reference);
+    e.code = 'PAY_BAD_CURRENCY'; throw e;
+  }
+
   const meta = txn.metadata || {};
   const schoolId = meta.schoolId;
   const plan = meta.plan;
@@ -42,6 +66,13 @@ async function activateFromReference(reference) {
   }
 
   const price = paystack.priceForPlan(plan);
+  // pay2-hardening-v1: never compare money against garbage. If the resolved
+  // price is not a sane integer, fail retryable so no payment is lost while
+  // the env is fixed.
+  if (!Number.isInteger(price) || price < 100) {
+    const e = new Error('Plan price misconfigured for ' + plan + ' (' + price + ')');
+    e.code = 'PAY_PRICE_CONFIG'; throw e;
+  }
   if (typeof txn.amount !== 'number' || txn.amount < price) {
     const e = new Error('Amount ' + txn.amount + ' below plan price ' + price); e.code = 'PAY_UNDERPAID'; throw e;
   }
@@ -52,8 +83,7 @@ async function activateFromReference(reference) {
     return { activated: false, alreadyProcessed: true, status: sub.status, plan: sub.plan };
   }
 
-  const session = await prisma.academicSession.findFirst({ where: { schoolId, isCurrent: true } });
-  const endDate = resolveEndDate(session);
+  const endDate = resolveEndDate(sub); // pay2-hardening-v1 never-shrink
 
   const updated = await prisma.subscription.update({
     where: { schoolId },
@@ -69,4 +99,4 @@ async function activateFromReference(reference) {
   return { activated: true, alreadyProcessed: false, status: updated.status, plan: updated.plan, endDate };
 }
 
-module.exports = { activateFromReference, resolveEndDate };
+module.exports = { activateFromReference, resolveEndDate, PERIOD_DAYS };

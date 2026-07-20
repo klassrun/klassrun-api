@@ -1,16 +1,21 @@
 // src/modules/billing/billing.routes.js
-// pay-1-billing-routes
+// pay-1-billing-routes + pay2-hardening-v1
 //
 // JSON routes (mounted AFTER express.json):
 //   POST /api/billing/initialize     SCHOOL_ADMIN -> start a Paystack payment
 //   GET  /api/billing/verify/:ref    SCHOOL_ADMIN -> callback poll; also a
 //                                    backup activator (webhook is primary).
+//   GET  /api/billing/plans          SCHOOL_ADMIN -> prices + billing period
+//
+// pay2-hardening-v1: /plans also returns periodDays + periodLabel so the
+// Subscribe page renders exactly what the API will charge - the words on
+// screen can never drift from the billing math.
 
 const router = require('express').Router();
 const { authenticate, authorize } = require('../../middleware/auth');
 const prisma = require('../../config/db');
 const paystack = require('../../lib/paystack');
-const { activateFromReference } = require('./billing.activate');
+const { activateFromReference, PERIOD_DAYS } = require('./billing.activate');
 
 router.post('/initialize', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
   try {
@@ -74,9 +79,10 @@ router.get('/verify/:reference', authenticate, authorize('SCHOOL_ADMIN'), async 
   } catch (err) { next(err); }
 });
 
-// gate2-billing-plans
+// gate2-billing-plans + pay2-hardening-v1-period
 router.get('/plans', authenticate, authorize('SCHOOL_ADMIN'), (req, res) => {
-  res.json({ prices: paystack.planPrices(), currency: 'NGN' });
+  const periodLabel = PERIOD_DAYS === 30 ? 'month' : PERIOD_DAYS === 120 ? 'term' : PERIOD_DAYS + ' days';
+  res.json({ prices: paystack.planPrices(), currency: 'NGN', periodDays: PERIOD_DAYS, periodLabel });
 });
 
 module.exports = router;

@@ -1,25 +1,36 @@
 // src/lib/plan-gate.js
-// gate-1-plan-gate-lib
+// gate-1-plan-gate-lib + pay2-hardening-v1
 //
 // Two-axis entitlement gate for Klassrun. Ships DORMANT (observe): it computes
 // and LOGS what it WOULD block, then allows the request through. Flip
 // GATING_MODE=enforce only AFTER Paystack ships (the upgrade path). Anything
 // other than the literal string 'enforce' means observe (fail-open).
 //
-//   Axis 1 — requirePlan(feature):     does the school's PLAN include this?
+//   Axis 1 - requirePlan(feature):     does the school's PLAN include this?
 //            First enforcement pass blocks the Starter boundary ONLY
 //            (a Starter-tier school reaching Standard/Premium writes).
-//   Axis 2 — requireActiveForWrites:   is the subscription live enough to write?
+//   Axis 2 - requireActiveForWrites:   is the subscription live enough to write?
 //            Mirrors checkGenerationAllowed (402). Read-only freezes ALL
 //            mutations (AI + operations); GETs always pass.
 //
 // An ACTIVE (non-expired) TRIAL gets ALL-ACCESS (effective tier = premium),
 // regardless of the placeholder `plan` column that signup sets to 'starter'.
 // Both wrappers no-op on GET/HEAD/OPTIONS, so reads are never gated here.
+//
+// pay2-hardening-v1: canWrite is date-aware. ACTIVE/PAST_DUE only counts
+// while endDate + grace (BILLING_GRACE_DAYS env, default 3) is in the
+// future, computed on read - no cron, no status rewrites. Trials stay hard
+// at trialEndsAt; grace is for PAID lapse only.
 
 const prisma = require('../config/db');
 
 const TIER_RANK = { starter: 0, standard: 1, premium: 2 };
+
+const GRACE_DAYS = (function () {
+  const n = Number(process.env.BILLING_GRACE_DAYS);
+  return Number.isInteger(n) && n >= 0 && n <= 30 ? n : 3;
+})();
+const GRACE_MS = GRACE_DAYS * 24 * 60 * 60 * 1000;
 
 const PLAN_FEATURES = {
   AI_LESSON_NOTES:             { minTier: 'starter'  },
@@ -52,8 +63,14 @@ function effectiveRank(sub) {
   const r = TIER_RANK[String(sub.plan || 'starter').toLowerCase()];
   return (r === undefined) ? 0 : r;
 }
+function paidTimeLeft(sub) {
+  // pay2-hardening-v1: defensive on a missing endDate (schema requires it,
+  // but a gate must never lock a school out over absent data).
+  if (!sub.endDate) return true;
+  return new Date(sub.endDate).getTime() + GRACE_MS > Date.now();
+}
 function canWrite(sub) {
-  if (sub.status === 'ACTIVE' || sub.status === 'PAST_DUE') return true;
+  if (sub.status === 'ACTIVE' || sub.status === 'PAST_DUE') return paidTimeLeft(sub); // pay2-hardening-v1
   if (sub.status === 'TRIAL') return trialActive(sub);
   return false;
 }
@@ -92,5 +109,5 @@ module.exports = {
   requirePlan: requirePlan,
   requireActiveForWrites: requireActiveForWrites,
   PLAN_FEATURES: PLAN_FEATURES,
-  _internal: { effectiveRank: effectiveRank, canWrite: canWrite, trialActive: trialActive, TIER_RANK: TIER_RANK },
+  _internal: { effectiveRank: effectiveRank, canWrite: canWrite, trialActive: trialActive, TIER_RANK: TIER_RANK, paidTimeLeft: paidTimeLeft, GRACE_DAYS: GRACE_DAYS },
 };
