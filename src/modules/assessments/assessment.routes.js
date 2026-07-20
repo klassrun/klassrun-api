@@ -39,7 +39,7 @@ function termLabel(t) {
 }
 
 // ── POST /api/assessments/generate ──────────────────────────────────────────
-router.post('/generate', authenticate, authorize('TEACHER'), requireActiveForWrites, /* gate-1-assess-gen */ async (req, res, next) => {
+router.post('/generate', authenticate, authorize('TEACHER'), requireActiveForWrites, requirePlan('AI_EXAMS'), /* gate-1-assess-gen tiermap-v1 */ async (req, res, next) => {
   try {
     const { classId, subjectId, topic, questionType, count, difficulty, duration, markPerQuestion, additionalNotes } = req.body || {};
 
@@ -252,7 +252,7 @@ router.post('/generate', authenticate, authorize('TEACHER'), requireActiveForWri
 // Both TEACHER and SCHOOL_ADMIN can browse the bank.
 // ── POST /api/assessments/generate-end-of-term ──────────────────────────────
 // batch-3-phase-3c-end-of-term-route
-router.post('/generate-end-of-term', authenticate, authorize('TEACHER'), requireActiveForWrites, /* gate-1-assess-eot */ async (req, res, next) => {
+router.post('/generate-end-of-term', authenticate, authorize('TEACHER'), requireActiveForWrites, requirePlan('AI_EXAMS'), /* gate-1-assess-eot tiermap-v1 */ async (req, res, next) => {
   try {
     const { classId, subjectId, topics, objectiveCount, theoryCount, essayCount, difficulty, duration, additionalNotes } = req.body || {};
 

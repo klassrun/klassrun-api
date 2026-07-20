@@ -286,8 +286,21 @@ async function _callAnthropicWithSystem(systemPrompt, userMessage, maxTokens, te
   };
 }
 
+// yoruba-tokens-v1: lesson-note output budget. Tone-marked languages such
+// as Yoruba cost roughly 2-4x the tokens of English, so the ceiling is
+// raised and env-tunable. Math.max means this can only RAISE the old
+// MAX_TOKENS, never lower it. The JSON-retry path inherits the raise too.
+const NOTE_MAX_TOKENS = (function () {
+  const n = Number(process.env.AI_NOTE_MAX_TOKENS);
+  return Number.isInteger(n) && n >= 1000 && n <= 64000 ? n : 8192;
+})();
+const NOTE_RETRY_MAX_TOKENS = (function () {
+  const n = Number(process.env.AI_NOTE_RETRY_MAX_TOKENS);
+  if (Number.isInteger(n) && n >= NOTE_MAX_TOKENS && n <= 64000) return n;
+  return Math.min(64000, NOTE_MAX_TOKENS * 2);
+})();
 async function callAnthropic(userMessage, temperature) {
-  return _callAnthropicWithSystem(SYSTEM_PROMPT, userMessage, MAX_TOKENS, temperature);
+  return _callAnthropicWithSystem(SYSTEM_PROMPT, userMessage, Math.max(MAX_TOKENS, NOTE_MAX_TOKENS), temperature);
 }
 
 /**
@@ -353,13 +366,27 @@ async function generateLessonNote(params) {
   // Detect truncation BEFORE JSON.parse. Parsing truncated JSON fails;
   // the retry hits the same cap and wastes another full generation.
   if (result.stopReason === 'max_tokens') {
-    console.error('[generateLessonNote] truncated at max_tokens:', {
+    // yoruba-tokens-v1: tone-marked output (Yoruba diacritics) costs 2-4x
+    // the tokens of English - one retry with a larger budget before
+    // failing, the same courtesy the other generators already get.
+    console.error('[generateLessonNote] truncated at max_tokens, retrying larger:', {
       outputTokens: result.outputTokens,
       textLength:   text.length,
+      retryBudget:  NOTE_RETRY_MAX_TOKENS,
     });
-    const err = new Error('AI output truncated at max_tokens (' + result.outputTokens + ' tokens)');
-    err.code = 'AI_TRUNCATED';
-    throw err;
+    let bigger;
+    try {
+      bigger = await _callAnthropicWithSystem(SYSTEM_PROMPT, userMessage, NOTE_RETRY_MAX_TOKENS, 0.2);
+    } catch (err2) {
+      if (err2.code === 'NO_API_KEY') throw err2;
+      throw classifyAnthropicError(err2);
+    }
+    text = stripFences(bigger.text);
+    if (bigger.stopReason === 'max_tokens') {
+      const err = new Error('AI output truncated at max_tokens even at ' + NOTE_RETRY_MAX_TOKENS + ' (' + bigger.outputTokens + ' tokens)');
+      err.code = 'AI_TRUNCATED';
+      throw err;
+    }
   }
 
   let parsed;
