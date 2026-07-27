@@ -111,6 +111,7 @@ app.use('/api/billing',     require('./modules/billing/billing.routes')); // pay
 app.use('/api/analytics', require('./modules/analytics/analytics.routes')); // batch-6-analytics-mount
 app.use('/api/leads', require('./modules/leads/lead.routes')); // leads-capture-mount
 app.use('/api/admin', require('./modules/admin/admin.routes')); // superadmin-mvp-mount
+app.use('/api/internal', require('./modules/internal/internal.routes')); // phaseb1-internal-mount
 
 // ── 404 (must come before the error handler) ────────────────────────────────
 app.use((req, res) => {

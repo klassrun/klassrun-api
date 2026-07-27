@@ -19,6 +19,7 @@
 
 const prisma = require('../../config/db');
 const paystack = require('../../lib/paystack');
+const ledger = require('../../lib/billing-ledger'); // phaseb1-ledger-require
 
 const PERIOD_DAYS = (function () {
   const n = Number(process.env.BILLING_PERIOD_DAYS);
@@ -38,7 +39,11 @@ function resolveEndDate(sub) {
   return new Date(base + PERIOD_MS);
 }
 
-async function activateFromReference(reference) {
+async function activateFromReference(reference, opts) {
+  // phaseb1-ledger-source: which activator got here first. Defaults to
+  // webhook because the webhook is primary and is the ONLY activator for
+  // transfer/USSD payers who never return to the callback page.
+  const source = (opts && opts.source) || 'webhook';
   if (!reference) { const e = new Error('No reference'); e.code = 'PAY_NO_REF'; throw e; }
 
   const seen = await prisma.subscription.findFirst({ where: { paystackRef: reference } });
@@ -95,6 +100,32 @@ async function activateFromReference(reference) {
       paystackCustId: (txn.customer && txn.customer.customer_code) || sub.paystackCustId || null,
     },
   });
+
+  // phaseb1-ledger-book: book the payment, then receipt it. Both are
+  // non-fatal by construction - the school has paid and is ACTIVE no
+  // matter what the bookkeeping does next. payments.reference is UNIQUE,
+  // so a webhook/verify race books exactly one row and, because the
+  // receipt is gated on winning that insert, sends exactly one receipt.
+  const booked = await ledger.recordPayment({
+    reference: reference,
+    schoolId: schoolId,
+    plan: plan,
+    amountKobo: txn.amount,
+    currency: txn.currency,
+    channel: txn.channel || null,
+    source: source,
+    paidAt: txn.paid_at ? new Date(txn.paid_at) : new Date(),
+    rawEvent: txn,
+  });
+  if (booked.written) {
+    await ledger.sendReceipt({
+      schoolId: schoolId,
+      plan: plan,
+      amountKobo: txn.amount,
+      reference: reference,
+      endDate: endDate,
+    });
+  }
 
   return { activated: true, alreadyProcessed: false, status: updated.status, plan: updated.plan, endDate };
 }

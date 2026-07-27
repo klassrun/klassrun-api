@@ -68,7 +68,7 @@ router.get('/verify/:reference', authenticate, authorize('SCHOOL_ADMIN'), async 
   try {
     const reference = req.params.reference;
     try {
-      await activateFromReference(reference);
+      await activateFromReference(reference, { source: 'verify' }); // phaseb1-verify-source
     } catch (err) {
       console.error('[billing/verify] backup activation note:', err.code || err.message);
     }

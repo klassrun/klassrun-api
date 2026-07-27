@@ -1,0 +1,61 @@
+# .github/workflows/billing-sweep.yml
+# phaseb1-sweep-workflow
+#
+# Calls the billing reminder sweep once a day at 11:00 UTC = 12:00 noon Lagos
+# (Nigeria is UTC+1 year-round - no daylight saving, so this never drifts).
+#
+# The endpoint itself is idempotent per calendar day: billing_reminders holds
+# a unique lock on (schoolId, kind, dateBucket), so a retry, a manual run, or
+# a duplicate GitHub schedule fires zero extra emails.
+
+name: Billing reminder sweep
+
+on:
+  schedule:
+    - cron: '0 11 * * *'
+  workflow_dispatch:
+    inputs:
+      dry:
+        description: 'Dry run - classify only, send no email and take no locks'
+        required: false
+        default: 'false'
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Call the sweep endpoint
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          API_BASE: ${{ vars.API_BASE_URL }}
+        run: |
+          set -euo pipefail
+          BASE="${API_BASE:-https://klassrun-api.onrender.com}"
+          URL="$BASE/api/internal/billing-sweep"
+          if [ "${{ github.event.inputs.dry }}" = "true" ]; then
+            URL="$URL?dry=1"
+            echo "DRY RUN - no email will be sent, no locks taken."
+          fi
+
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "CRON_SECRET repo secret is not set. Refusing to call the endpoint."
+            exit 1
+          fi
+
+          # Render free instances cold-start. --retry covers the wake-up, and
+          # --max-time keeps a hung request from burning the whole job.
+          HTTP=$(curl -s -o response.json -w '%{http_code}' \
+            --retry 5 --retry-delay 20 --retry-connrefused --max-time 300 \
+            -X POST "$URL" \
+            -H "x-cron-secret: $CRON_SECRET" \
+            -H 'Content-Type: application/json')
+
+          echo "HTTP $HTTP"
+          cat response.json || true
+          echo ""
+
+          if [ "$HTTP" != "200" ]; then
+            echo "Sweep did not return 200. Failing the job so it is visible."
+            exit 1
+          fi

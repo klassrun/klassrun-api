@@ -772,3 +772,49 @@ model FeeRecord {
   @@index([schoolId, sessionId, term])
   @@map("fee_records")
 }
+
+// phaseb1-models
+// ============================================================================
+//  PHASE B1 - payments ledger + reminder send-log
+// ============================================================================
+// Both tables were created by hand in the Neon SQL Editor
+// (20260720120000_phaseb_payments_reminders) BEFORE this code shipped, which
+// is why there is no migration folder here: Prisma is being told the shape of
+// tables that already exist.
+//
+// Neither model declares a Prisma relation to School. The ledger is a
+// financial record: it is deliberately not reachable through a School
+// include, and no Prisma-side cascade can quietly take it with a school row.
+// schoolId is a plain scalar and is resolved with a second query where a name
+// is needed.
+
+model Payment {
+  id         String   @id @default(uuid())
+  reference  String   @unique
+  schoolId   String
+  plan       String
+  amountKobo Int
+  currency   String   @default("NGN")
+  channel    String?
+  source     String // "webhook" | "verify" | "manual"
+  paidAt     DateTime
+  rawEvent   Json?
+  note       String?
+  createdAt  DateTime @default(now())
+
+  @@index([schoolId])
+  @@index([paidAt])
+  @@map("payments")
+}
+
+model BillingReminder {
+  id         String   @id @default(uuid())
+  schoolId   String
+  kind       String // "trial-ends-2d" | "renewal-2d" | "grace-1" | "grace-2" | "grace-3"
+  dateBucket String // "YYYY-MM-DD" in Africa/Lagos
+  sentAt     DateTime @default(now())
+
+  @@unique([schoolId, kind, dateBucket])
+  @@index([schoolId])
+  @@map("billing_reminders")
+}
