@@ -50,6 +50,14 @@ function planLabelOf(plan) {
 }
 
 function isDevSchool(sub) {
+  // phaseb1a-devcheck-hotfix: a school that has actually paid or lapsed from
+  // paying (ACTIVE, PAST_DUE, EXPIRED, CANCELLED) is real by definition, no
+  // matter what its trialEndsAt sentinel says. Activation never touches this
+  // column, so a school seeded as a dev/test TRIAL and later genuinely
+  // activated (wildcrooksng, 2026-07-21) would otherwise carry its 2126
+  // sentinel forever and never receive a renewal or grace reminder. Only a
+  // school STILL sitting in TRIAL can be exempted by the sentinel year.
+  if (sub.status !== 'TRIAL') return false;
   return !!sub.trialEndsAt && new Date(sub.trialEndsAt).getUTCFullYear() >= DEV_YEAR_FLOOR;
 }
 
