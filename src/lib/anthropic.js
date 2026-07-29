@@ -71,20 +71,23 @@ STRICT RULES:
 
 8. NOTATION — write all mathematics, chemistry, and physics as LaTeX, never as plain text. [klassrun-notation-v2]
    Use $...$ for inline notation and $$...$$ for a formula on its own line.
-   Write exactly ONE backslash before each LaTeX command — e.g. $\\frac{1}{2}$,
-   $\\sqrt{16}$, $x^{2}$, $\\times$. Do NOT double the backslash.
-   - Mathematics: fractions $\\frac{a}{b}$, powers $x^{2}$, roots $\\sqrt{16}$,
-     products $3 \\times 4$, and block equations such as
-     $$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$.
-   - Chemistry: ALWAYS use the mhchem command \\ce{...}. Formulae $\\ce{H2O}$,
-     $\\ce{CO2}$, $\\ce{H2SO4}$; balanced equations $\\ce{2H2 + O2 -> 2H2O}$ and
-     $\\ce{CaCO3 -> CaO + CO2}$; states/ions $\\ce{NaCl(aq)}$, $\\ce{Na+ + Cl-}$.
+   ESCAPING - your output is JSON, so every backslash must be written TWICE to
+   survive JSON parsing, leaving exactly one in the decoded string. A SINGLE
+   backslash before f, n, t, b, r or u is a JSON escape sequence and DESTROYS the
+   command: "$\\frac{1}{2}$" decodes to an invisible form-feed byte followed by
+   "rac{1}{2}" and nothing renders. Always write two.
+   - Mathematics: fractions $\\\\frac{a}{b}$, powers $x^{2}$, roots $\\\\sqrt{16}$,
+     products $3 \\\\times 4$, and block equations such as
+     $$x = \\\\frac{-b \\\\pm \\\\sqrt{b^2 - 4ac}}{2a}$$.
+   - Chemistry: ALWAYS use the mhchem command \\\\ce{...}. Formulae $\\\\ce{H2O}$,
+     $\\\\ce{CO2}$, $\\\\ce{H2SO4}$; balanced equations $\\\\ce{2H2 + O2 -> 2H2O}$ and
+     $\\\\ce{CaCO3 -> CaO + CO2}$; states/ions $\\\\ce{NaCl(aq)}$, $\\\\ce{Na+ + Cl-}$.
      Never write chemistry as plain text like "H2O" or "2H2 + O2 = 2H2O".
-   - Physics: Greek letters $\\Delta$, $\\lambda$, $\\theta$, $\\omega$; powers of
-     ten $10^{-3}$; units $\\text{m s}^{-1}$, $\\text{N kg}^{-1}$; formulae
-     $v = \\frac{d}{t}$, $F = ma$.
+   - Physics: Greek letters $\\\\Delta$, $\\\\lambda$, $\\\\theta$, $\\\\omega$; powers of
+     ten $10^{-3}$; units $\\\\text{m s}^{-1}$, $\\\\text{N kg}^{-1}$; formulae
+     $v = \\\\frac{d}{t}$, $F = ma$.
    Plain-text notation ("1/2", "x^2", "sqrt(16)", "H2O", "10^-3") is BANNED in
-   EVERY text field of the output — use $...$ instead. The $ sign is ONLY for
+   EVERY text field of the output - use $...$ instead. The $ sign is ONLY for
    LaTeX; monetary amounts always use the Naira symbol, never $.
 9. SUB-TOPICS:
    The teacher may provide a "subTopics" list in the request.
@@ -126,7 +129,7 @@ markdown fences, no commentary:
   "explanationSections": [
     { "subTopic": "string", "content": "string with LaTeX where appropriate" }
   ],
-  "chalkboardSummary": "string — what the teacher writes on the board, formatted with line breaks (use \\\\n)",
+  "chalkboardSummary": "string - what the teacher writes on the board, using real line breaks (a JSON \\n escape), NOT the two characters backslash and n",
   "evaluation": ["string", "..."],
   "assignment": "string — homework for next class",
   "suggestedReading": ["string", "..."]
@@ -178,6 +181,59 @@ function buildUserMessage({ classObj, subject, topic, week, duration, session, a
   return lines.join('\n');
 }
 
+// klassrun-latex-escape-v1
+// LaTeX commands whose first letter collides with a JSON escape sequence.
+// Only b f n r t u can collide - \ce, \Delta, \pm, \sqrt etc. are always safe.
+const LATEX_COLLIDING_COMMANDS = [
+  'frac','forall','fill','flat',
+  'times','text','theta','tau','to','top','triangle','tan','tfrac','therefore',
+  'beta','bar','big','bmatrix','bullet','because','binom','boxed',
+  'ne','neq','nu','nabla','notin','nonumber',
+  'rho','rightarrow','right','rangle','rfloor',
+  'underline','upsilon','uparrow','ubrace',
+].sort(function (a, b) { return b.length - a.length; });
+
+// Repair under-escaped LaTeX in the model's RAW text BEFORE JSON.parse.
+// Pre-parse is the ONLY place this is recoverable: once parsed, "\frac" has
+// already collapsed into a form-feed byte, indistinguishable from a real one.
+// Idempotent - already-correct input comes back unchanged with fixes === 0.
+function repairLatexEscapes(raw) {
+  if (typeof raw !== 'string' || raw.indexOf('\\') === -1) return raw;
+  var out = '';
+  var i = 0;
+  var fixes = 0;
+  while (i < raw.length) {
+    if (raw[i] === '\\' && i + 1 < raw.length) {
+      var next = raw[i + 1];
+      if ('bfnrtu'.indexOf(next) !== -1) {
+        var rest = raw.slice(i + 1);
+        var hit = null;
+        for (var k = 0; k < LATEX_COLLIDING_COMMANDS.length; k++) {
+          var cmd = LATEX_COLLIDING_COMMANDS[k];
+          if (rest.lastIndexOf(cmd, 0) !== 0) continue;
+          var after = rest.charAt(cmd.length);
+          // A real LaTeX command never runs straight into a word, so require a
+          // non-letter boundary. Without this guard, "line one\nextra credit"
+          // is mangled into a literal backslash-n-extra.
+          if (after !== '' && /[a-zA-Z]/.test(after)) continue;
+          hit = cmd;
+          break;
+        }
+        if (hit) { out += '\\\\' + hit; i += 1 + hit.length; fixes++; continue; }
+      }
+      out += raw[i] + next;
+      i += 2;
+      continue;
+    }
+    out += raw[i];
+    i++;
+  }
+  if (fixes > 0) {
+    console.error('[repairLatexEscapes] repaired ' + fixes + ' under-escaped LaTeX command(s); the model under-escaped despite the prompt');
+  }
+  return out;
+}
+
 // Strip leading/trailing markdown fences if the model added them despite
 // being told not to. Defensive.
 function stripFences(text) {
@@ -190,7 +246,10 @@ function stripFences(text) {
   if (t.endsWith('```')) {
     t = t.replace(/\n?```$/, '');
   }
-  return t.trim();
+  // klassrun-latex-escape-v1: every generator parses through stripFences, so
+  // repairing here covers notes, schemes, exams, end-of-term, comments and
+  // scheme-parse from one insertion point.
+  return repairLatexEscapes(t.trim());
 }
 
 // Validate the shape minimally — the API consumer trusts these fields exist.
@@ -513,20 +572,23 @@ STRICT RULES:
        pedagogical order.
 9. NOTATION — write all mathematics, chemistry, and physics as LaTeX, never as plain text. [klassrun-notation-v2]
    Use $...$ for inline notation and $$...$$ for a formula on its own line.
-   Write exactly ONE backslash before each LaTeX command — e.g. $\\frac{1}{2}$,
-   $\\sqrt{16}$, $x^{2}$, $\\times$. Do NOT double the backslash.
-   - Mathematics: fractions $\\frac{a}{b}$, powers $x^{2}$, roots $\\sqrt{16}$,
-     products $3 \\times 4$, and block equations such as
-     $$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$.
-   - Chemistry: ALWAYS use the mhchem command \\ce{...}. Formulae $\\ce{H2O}$,
-     $\\ce{CO2}$, $\\ce{H2SO4}$; balanced equations $\\ce{2H2 + O2 -> 2H2O}$ and
-     $\\ce{CaCO3 -> CaO + CO2}$; states/ions $\\ce{NaCl(aq)}$, $\\ce{Na+ + Cl-}$.
+   ESCAPING - your output is JSON, so every backslash must be written TWICE to
+   survive JSON parsing, leaving exactly one in the decoded string. A SINGLE
+   backslash before f, n, t, b, r or u is a JSON escape sequence and DESTROYS the
+   command: "$\\frac{1}{2}$" decodes to an invisible form-feed byte followed by
+   "rac{1}{2}" and nothing renders. Always write two.
+   - Mathematics: fractions $\\\\frac{a}{b}$, powers $x^{2}$, roots $\\\\sqrt{16}$,
+     products $3 \\\\times 4$, and block equations such as
+     $$x = \\\\frac{-b \\\\pm \\\\sqrt{b^2 - 4ac}}{2a}$$.
+   - Chemistry: ALWAYS use the mhchem command \\\\ce{...}. Formulae $\\\\ce{H2O}$,
+     $\\\\ce{CO2}$, $\\\\ce{H2SO4}$; balanced equations $\\\\ce{2H2 + O2 -> 2H2O}$ and
+     $\\\\ce{CaCO3 -> CaO + CO2}$; states/ions $\\\\ce{NaCl(aq)}$, $\\\\ce{Na+ + Cl-}$.
      Never write chemistry as plain text like "H2O" or "2H2 + O2 = 2H2O".
-   - Physics: Greek letters $\\Delta$, $\\lambda$, $\\theta$, $\\omega$; powers of
-     ten $10^{-3}$; units $\\text{m s}^{-1}$, $\\text{N kg}^{-1}$; formulae
-     $v = \\frac{d}{t}$, $F = ma$.
+   - Physics: Greek letters $\\\\Delta$, $\\\\lambda$, $\\\\theta$, $\\\\omega$; powers of
+     ten $10^{-3}$; units $\\\\text{m s}^{-1}$, $\\\\text{N kg}^{-1}$; formulae
+     $v = \\\\frac{d}{t}$, $F = ma$.
    Plain-text notation ("1/2", "x^2", "sqrt(16)", "H2O", "10^-3") is BANNED in
-   EVERY text field of the output — use $...$ instead. The $ sign is ONLY for
+   EVERY text field of the output - use $...$ instead. The $ sign is ONLY for
    LaTeX; monetary amounts always use the Naira symbol, never $.
 10. AVOID INVENTED SOURCES:
     For "resources", use GENERIC source types ("NERDC-approved JSS
@@ -765,20 +827,23 @@ STRICT RULES:
      exam standard.
 7. NOTATION — write all mathematics, chemistry, and physics as LaTeX, never as plain text. [klassrun-notation-v2]
    Use $...$ for inline notation and $$...$$ for a formula on its own line.
-   Write exactly ONE backslash before each LaTeX command — e.g. $\\frac{1}{2}$,
-   $\\sqrt{16}$, $x^{2}$, $\\times$. Do NOT double the backslash.
-   - Mathematics: fractions $\\frac{a}{b}$, powers $x^{2}$, roots $\\sqrt{16}$,
-     products $3 \\times 4$, and block equations such as
-     $$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$.
-   - Chemistry: ALWAYS use the mhchem command \\ce{...}. Formulae $\\ce{H2O}$,
-     $\\ce{CO2}$, $\\ce{H2SO4}$; balanced equations $\\ce{2H2 + O2 -> 2H2O}$ and
-     $\\ce{CaCO3 -> CaO + CO2}$; states/ions $\\ce{NaCl(aq)}$, $\\ce{Na+ + Cl-}$.
+   ESCAPING - your output is JSON, so every backslash must be written TWICE to
+   survive JSON parsing, leaving exactly one in the decoded string. A SINGLE
+   backslash before f, n, t, b, r or u is a JSON escape sequence and DESTROYS the
+   command: "$\\frac{1}{2}$" decodes to an invisible form-feed byte followed by
+   "rac{1}{2}" and nothing renders. Always write two.
+   - Mathematics: fractions $\\\\frac{a}{b}$, powers $x^{2}$, roots $\\\\sqrt{16}$,
+     products $3 \\\\times 4$, and block equations such as
+     $$x = \\\\frac{-b \\\\pm \\\\sqrt{b^2 - 4ac}}{2a}$$.
+   - Chemistry: ALWAYS use the mhchem command \\\\ce{...}. Formulae $\\\\ce{H2O}$,
+     $\\\\ce{CO2}$, $\\\\ce{H2SO4}$; balanced equations $\\\\ce{2H2 + O2 -> 2H2O}$ and
+     $\\\\ce{CaCO3 -> CaO + CO2}$; states/ions $\\\\ce{NaCl(aq)}$, $\\\\ce{Na+ + Cl-}$.
      Never write chemistry as plain text like "H2O" or "2H2 + O2 = 2H2O".
-   - Physics: Greek letters $\\Delta$, $\\lambda$, $\\theta$, $\\omega$; powers of
-     ten $10^{-3}$; units $\\text{m s}^{-1}$, $\\text{N kg}^{-1}$; formulae
-     $v = \\frac{d}{t}$, $F = ma$.
+   - Physics: Greek letters $\\\\Delta$, $\\\\lambda$, $\\\\theta$, $\\\\omega$; powers of
+     ten $10^{-3}$; units $\\\\text{m s}^{-1}$, $\\\\text{N kg}^{-1}$; formulae
+     $v = \\\\frac{d}{t}$, $F = ma$.
    Plain-text notation ("1/2", "x^2", "sqrt(16)", "H2O", "10^-3") is BANNED in
-   EVERY text field of the output — use $...$ instead. The $ sign is ONLY for
+   EVERY text field of the output - use $...$ instead. The $ sign is ONLY for
    LaTeX; monetary amounts always use the Naira symbol, never $.
 8. VARIETY: No two questions in the same set may test exactly the same
    concept from the same angle. Spread across different aspects of the topic.
@@ -1043,20 +1108,23 @@ STRICT RULES:
    Include which topic each question covers.
 9. NOTATION — write all mathematics, chemistry, and physics as LaTeX, never as plain text. [klassrun-notation-v2]
    Use $...$ for inline notation and $$...$$ for a formula on its own line.
-   Write exactly ONE backslash before each LaTeX command — e.g. $\\frac{1}{2}$,
-   $\\sqrt{16}$, $x^{2}$, $\\times$. Do NOT double the backslash.
-   - Mathematics: fractions $\\frac{a}{b}$, powers $x^{2}$, roots $\\sqrt{16}$,
-     products $3 \\times 4$, and block equations such as
-     $$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$.
-   - Chemistry: ALWAYS use the mhchem command \\ce{...}. Formulae $\\ce{H2O}$,
-     $\\ce{CO2}$, $\\ce{H2SO4}$; balanced equations $\\ce{2H2 + O2 -> 2H2O}$ and
-     $\\ce{CaCO3 -> CaO + CO2}$; states/ions $\\ce{NaCl(aq)}$, $\\ce{Na+ + Cl-}$.
+   ESCAPING - your output is JSON, so every backslash must be written TWICE to
+   survive JSON parsing, leaving exactly one in the decoded string. A SINGLE
+   backslash before f, n, t, b, r or u is a JSON escape sequence and DESTROYS the
+   command: "$\\frac{1}{2}$" decodes to an invisible form-feed byte followed by
+   "rac{1}{2}" and nothing renders. Always write two.
+   - Mathematics: fractions $\\\\frac{a}{b}$, powers $x^{2}$, roots $\\\\sqrt{16}$,
+     products $3 \\\\times 4$, and block equations such as
+     $$x = \\\\frac{-b \\\\pm \\\\sqrt{b^2 - 4ac}}{2a}$$.
+   - Chemistry: ALWAYS use the mhchem command \\\\ce{...}. Formulae $\\\\ce{H2O}$,
+     $\\\\ce{CO2}$, $\\\\ce{H2SO4}$; balanced equations $\\\\ce{2H2 + O2 -> 2H2O}$ and
+     $\\\\ce{CaCO3 -> CaO + CO2}$; states/ions $\\\\ce{NaCl(aq)}$, $\\\\ce{Na+ + Cl-}$.
      Never write chemistry as plain text like "H2O" or "2H2 + O2 = 2H2O".
-   - Physics: Greek letters $\\Delta$, $\\lambda$, $\\theta$, $\\omega$; powers of
-     ten $10^{-3}$; units $\\text{m s}^{-1}$, $\\text{N kg}^{-1}$; formulae
-     $v = \\frac{d}{t}$, $F = ma$.
+   - Physics: Greek letters $\\\\Delta$, $\\\\lambda$, $\\\\theta$, $\\\\omega$; powers of
+     ten $10^{-3}$; units $\\\\text{m s}^{-1}$, $\\\\text{N kg}^{-1}$; formulae
+     $v = \\\\frac{d}{t}$, $F = ma$.
    Plain-text notation ("1/2", "x^2", "sqrt(16)", "H2O", "10^-3") is BANNED in
-   EVERY text field of the output — use $...$ instead. The $ sign is ONLY for
+   EVERY text field of the output - use $...$ instead. The $ sign is ONLY for
    LaTeX; monetary amounts always use the Naira symbol, never $.
 10. WAEC/NECO ALIGNMENT: SS 1-3 must match WAEC/NECO exam style.
     JSS 1-3 must match BECE style.
@@ -1672,5 +1740,6 @@ module.exports = {
     buildUserMessage,
     stripFences,
     isValidLessonNote,
+    repairLatexEscapes,
   },
 };
