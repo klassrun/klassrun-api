@@ -19,6 +19,7 @@ const email  = require('../../lib/email');
 const { inviteEmail }         = require('../../lib/email-templates/invite');
 const { teacherRevokedEmail } = require('../../lib/email-templates/teacher-revoked');
 const { recordAuthEvent }     = require('../../lib/audit');
+const { checkTeacherCap } = require('../../lib/teacher-cap'); // teachercap-wire-v1
 const { invalidateUserCache } = require('../../middleware/auth'); // perf-2-auth-cache
 
 const INVITE_TTL_DAYS = 7;
@@ -166,6 +167,21 @@ const reinstateTeacher = async (req, res, next) => {
     }
     if (!teacher.revokedAt) {
       return res.status(400).json({ error: { message: 'Teacher is already active' } });
+    }
+
+    // teachercap-wire-v1: reinstate returns a row to the counted population
+    // (revokedAt: null), so without this a school could revoke 5, invite 5
+    // new, then reinstate the 5 and sit above its cap without any single
+    // call ever exceeding it.
+    const capCheck = await checkTeacherCap(schoolId);
+    if (!capCheck.ok) {
+      return res.status(403).json({
+        error: { message: capCheck.message },
+        code: capCheck.code,
+        upgrade: true,
+        cap: capCheck.cap,
+        current: capCheck.current,
+      });
     }
 
     await prisma.user.update({

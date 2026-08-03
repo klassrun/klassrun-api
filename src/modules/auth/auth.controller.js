@@ -25,6 +25,7 @@ const email             = require('../../lib/email');
 const { welcomeEmail }  = require('../../lib/email-templates/welcome');
 const { inviteEmail }   = require('../../lib/email-templates/invite');
 const { recordAuthEvent } = require('../../lib/audit');
+const { checkTeacherCap } = require('../../lib/teacher-cap'); // teachercap-wire-v1
 
 const INVITE_TTL_DAYS = 7;
 const TRIAL_DAYS      = 14;
@@ -293,6 +294,21 @@ const inviteTeacher = async (req, res, next) => {
     if (existing) {
       return res.status(409).json({
         error: { message: 'This email is already registered' },
+      });
+    }
+
+    // teachercap-wire-v1: seat gate at the ONLY seam that creates a staff row.
+    // Runs BEFORE token generation, user.create and the invite email, so a
+    // capped school gets a clean 403 with no row written and no mail sent.
+    // Dormant unless GATING_MODE === 'enforce'. Fails open on DB error.
+    const capCheck = await checkTeacherCap(schoolId);
+    if (!capCheck.ok) {
+      return res.status(403).json({
+        error: { message: capCheck.message },
+        code: capCheck.code,
+        upgrade: true,
+        cap: capCheck.cap,
+        current: capCheck.current,
       });
     }
 
