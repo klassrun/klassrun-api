@@ -14,6 +14,7 @@
 //   POST   /api/students/:id/restore                  un-archive (SCHOOL_ADMIN)
 //   POST   /api/students/photo-signature              Cloudinary sig (SCHOOL_ADMIN)
 
+const express = require('express'); // students-bulk-v1
 const router = require('express').Router();
 const { requirePlan, requireActiveForWrites } = require('../../lib/plan-gate'); // gate-1-require
 const { authenticate, authorize } = require('../../middleware/auth');
@@ -462,5 +463,293 @@ router.post('/photo-signature', authenticate, authorize('SCHOOL_ADMIN'), require
     next(err);
   }
 });
+
+
+// ============================================================================
+// students-bulk-v1: bulk student upload
+//
+// Parsing rules are MOLEK-REBUILD-SPEC 10.2. Each one is a real bug that has
+// bitten a real school: Excel's BOM, Excel's trailing header spaces, a single
+// typo aborting a 70-row import, and "3 rows skipped" with no way to find them.
+// ============================================================================
+
+const BULK_MAX_ROWS = 300; // spec 9.2: keep the transaction inside its timeout
+
+// utf-8-sig + RFC4180. Handles quoted fields containing commas, newlines and
+// doubled quotes - guardian names really do contain commas.
+function bulkParseCsv(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const rows = []; let row = []; let field = ''; let inQ = false; let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
+        inQ = false; i++; continue;
+      }
+      field += c; i++; continue;
+    }
+    if (c === '"') { inQ = true; i++; continue; }
+    if (c === ',') { row.push(field); field = ''; i++; continue; }
+    if (c === '\r') { i++; continue; }
+    if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; i++; continue; }
+    field += c; i++;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+function bulkNormHeader(h) {
+  return String(h || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function bulkToRecords(text) {
+  const rows = bulkParseCsv(text);
+  if (rows.length === 0) return { headers: [], records: [] };
+  const headers = rows[0].map(bulkNormHeader);
+  const records = [];
+  for (let r = 1; r < rows.length; r++) {
+    const cells = rows[r];
+    const first = String(cells[0] || '').trim();
+    if (cells.every((c) => String(c || '').trim() === '')) continue;
+    if (first.startsWith('#')) continue;
+    const obj = {};
+    headers.forEach((h, idx) => { obj[h] = cells[idx] === undefined ? '' : String(cells[idx]).trim(); });
+    obj.__line = r + 1; // the line number the admin sees in Excel
+    records.push(obj);
+  }
+  return { headers, records };
+}
+
+// Accepts YYYY-MM-DD and DD/MM/YYYY. Nigerian schools write both.
+function bulkParseDob(raw) {
+  if (!raw) return { ok: true, value: undefined };
+  let m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  let y, mo, d;
+  if (m) { y = +m[1]; mo = +m[2]; d = +m[3]; }
+  else {
+    m = /^(\d{1,2})[\/](\d{1,2})[\/](\d{4})$/.exec(raw);
+    if (!m) return { ok: false, error: 'date_of_birth must be YYYY-MM-DD or DD/MM/YYYY' };
+    d = +m[1]; mo = +m[2]; y = +m[3];
+  }
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) {
+    return { ok: false, error: 'date_of_birth is not a real date' };
+  }
+  if (dt.getTime() > Date.now()) return { ok: false, error: 'date_of_birth is in the future' };
+  return { ok: true, value: dt };
+}
+
+const BULK_TEMPLATE_HEADERS = [
+  'admission_number', 'first_name', 'last_name', 'middle_name', 'class',
+  'gender', 'date_of_birth', 'guardian_name', 'guardian_phone', 'guardian_email',
+];
+
+// GET /api/students/bulk/template
+// Two segments, so it can never be captured by GET /:id.
+router.get('/bulk/template', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
+  try {
+    const classes = await prisma.class.findMany({
+      where: { schoolId: req.user.schoolId, archivedAt: null },
+      orderBy: { name: 'asc' }, select: { name: true },
+    });
+    const names = classes.map((c) => c.name).join(', ') || '(no classes yet - create one first)';
+    const lines = [
+      BULK_TEMPLATE_HEADERS.join(','),
+      ',,,,,,,,,',
+      '',
+      '# HOW TO USE THIS FILE',
+      '# 1. One student per row. Delete these # lines or leave them - they are ignored.',
+      '# 2. Required: first_name, last_name, class.',
+      '# 3. class must match a class name exactly (case does not matter).',
+      '#    Your classes: ' + names.replace(/,/g, ';'),
+      '# 4. Leave admission_number BLANK and one will be generated for you.',
+      '#    Fill it in and the student is UPDATED instead - that makes this file',
+      '#    safe to correct and re-upload without creating duplicates.',
+      '# 5. date_of_birth: YYYY-MM-DD or DD/MM/YYYY.',
+      '# 6. Maximum ' + BULK_MAX_ROWS + ' students per upload. Split larger lists.',
+    ];
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="klassrun-students-template.csv"');
+    return res.send('\uFEFF' + lines.join('\r\n') + '\r\n');
+  } catch (err) { next(err); }
+});
+
+// POST /api/students/bulk    Content-Type: text/csv
+router.post(
+  '/bulk',
+  authenticate,
+  authorize('SCHOOL_ADMIN'),
+  requireActiveForWrites,
+  requirePlan('STUDENTS'),
+  express.text({ type: ['text/csv', 'text/plain'], limit: '2mb' }),
+  async (req, res, next) => {
+    try {
+      const text = typeof req.body === 'string' ? req.body : '';
+      if (!text.trim()) {
+        return res.status(400).json({ error: { message: 'Send the CSV as the request body with Content-Type: text/csv' } });
+      }
+
+      const { headers, records } = bulkToRecords(text);
+      if (headers.indexOf('first_name') === -1 || headers.indexOf('last_name') === -1 || headers.indexOf('class') === -1) {
+        return res.status(400).json({ error: { message: 'CSV must have first_name, last_name and class columns. Download the template.' } });
+      }
+      if (records.length === 0) {
+        return res.status(400).json({ error: { message: 'No data rows found in the CSV' } });
+      }
+      if (records.length > BULK_MAX_ROWS) {
+        return res.status(400).json({ error: { message: 'Too many rows (' + records.length + '). Maximum is ' + BULK_MAX_ROWS + ' per upload.' } });
+      }
+
+      // Same rule as single create: an Enrollment row needs a session to anchor to.
+      const currentSession = await prisma.academicSession.findFirst({
+        where: { schoolId: req.user.schoolId, isCurrent: true }, select: { id: true },
+      });
+      if (!currentSession) {
+        return res.status(400).json({ error: { message: 'Set a current academic session before adding students.', field: 'sessionId' } });
+      }
+
+      // ONE query for classes, ONE for existing students (spec 10.3).
+      const classes = await prisma.class.findMany({
+        where: { schoolId: req.user.schoolId, archivedAt: null }, select: { id: true, name: true },
+      });
+      const classByName = new Map(classes.map((c) => [c.name.trim().toLowerCase(), c.id]));
+
+      const askedAdmissions = records
+        .map((r) => String(r.admission_number || '').trim().toUpperCase())
+        .filter((a) => a !== '');
+      const existing = askedAdmissions.length === 0 ? [] : await prisma.student.findMany({
+        where: { schoolId: req.user.schoolId, admissionNumber: { in: askedAdmissions } },
+        select: { id: true, admissionNumber: true, classId: true },
+      });
+      const existingByAdmission = new Map(existing.map((s) => [String(s.admissionNumber).toUpperCase(), s]));
+
+      const errors = [];
+      const toCreate = [];
+      const toUpdate = [];
+      const seenInFile = new Set();
+
+      for (const row of records) {
+        const line = row.__line;
+        const rowErr = [];
+
+        const firstName = String(row.first_name || '').trim();
+        const lastName = String(row.last_name || '').trim();
+        if (!firstName) rowErr.push('first_name is required');
+        if (!lastName) rowErr.push('last_name is required');
+        if (firstName.length > 60 || lastName.length > 60) rowErr.push('names must be 60 characters or fewer');
+
+        const className = String(row['class'] || '').trim();
+        const classId = classByName.get(className.toLowerCase());
+        if (!className) rowErr.push('class is required');
+        else if (!classId) rowErr.push('class "' + className + '" does not exist in this school');
+
+        const dob = bulkParseDob(String(row.date_of_birth || '').trim());
+        if (!dob.ok) rowErr.push(dob.error);
+
+        const admission = String(row.admission_number || '').trim().toUpperCase();
+        if (admission && seenInFile.has(admission)) rowErr.push('admission_number ' + admission + ' appears more than once in this file');
+        if (admission) seenInFile.add(admission);
+
+        if (rowErr.length) { errors.push('Line ' + line + ': ' + rowErr.join('; ')); continue; }
+
+        const fields = {
+          firstName, lastName, classId,
+          middleName: String(row.middle_name || '').trim() || null,
+          gender: String(row.gender || '').trim() || null,
+          guardianName: String(row.guardian_name || '').trim() || null,
+          guardianPhone: String(row.guardian_phone || '').trim() || null,
+          guardianEmail: String(row.guardian_email || '').trim() || null,
+        };
+        if (dob.value !== undefined) fields.dateOfBirth = dob.value;
+
+        const hit = admission ? existingByAdmission.get(admission) : null;
+        if (hit) toUpdate.push({ id: hit.id, previousClassId: hit.classId, data: fields });
+        else toCreate.push({ admissionNumber: admission || null, data: fields });
+      }
+
+      if (toCreate.length === 0 && toUpdate.length === 0) {
+        return res.status(400).json({
+          error: { message: 'No valid rows. Fix the errors and re-upload.' },
+          created: 0, updated: 0, errors, totalRows: records.length,
+        });
+      }
+
+      // Allocate auto admission numbers ONCE, sequentially. The single-create
+      // path retries on P2002 six times, which is fine for one student and
+      // quadratic for three hundred.
+      let seq = null;
+      let offset = 0;
+      for (const c of toCreate) {
+        if (c.admissionNumber) continue;
+        if (!seq) seq = await nextAdmissionNumber(req.user.schoolId);
+        c.admissionNumber = seq.stem + String(seq.n + offset).padStart(3, '0');
+        offset++;
+      }
+
+      const { randomUUID } = require('crypto');
+      const studentRows = toCreate.map((c) => ({
+        id: randomUUID(),
+        schoolId: req.user.schoolId,
+        admissionNumber: c.admissionNumber,
+        ...c.data,
+      }));
+      const enrollmentRows = studentRows.map((s) => ({
+        id: randomUUID(),
+        schoolId: req.user.schoolId,
+        studentId: s.id,
+        sessionId: currentSession.id,
+        classId: s.classId,
+        isCurrent: true,
+      }));
+
+      let created = 0;
+      let updated = 0;
+      try {
+        await prisma.$transaction(async (tx) => {
+          if (studentRows.length) {
+            // Ids generated here, so both tables go in ONE statement each.
+            await tx.student.createMany({ data: studentRows });
+            await tx.enrollment.createMany({ data: enrollmentRows });
+            created = studentRows.length;
+          }
+          for (const u of toUpdate) {
+            await tx.student.update({ where: { id: u.id }, data: u.data });
+            if (u.data.classId !== u.previousClassId) {
+              await tx.enrollment.upsert({
+                where: { studentId_sessionId: { studentId: u.id, sessionId: currentSession.id } },
+                update: { classId: u.data.classId, isCurrent: true },
+                create: {
+                  schoolId: req.user.schoolId, studentId: u.id,
+                  sessionId: currentSession.id, classId: u.data.classId, isCurrent: true,
+                },
+              });
+            }
+            updated++;
+          }
+        }, { timeout: 45000, maxWait: 15000 });
+      } catch (e) {
+        if (e && e.code === 'P2002') {
+          return res.status(409).json({
+            error: { message: 'An admission number in this file already exists. Nothing was imported.' },
+            created: 0, updated: 0, errors, totalRows: records.length,
+          });
+        }
+        throw e;
+      }
+
+      recordAcademicEvent('STUDENTS_BULK_IMPORTED', {
+        schoolId: req.user.schoolId,
+        actorId: req.user.id,
+        metadata: { created, updated, errorCount: errors.length, totalRows: records.length },
+      });
+
+      return res.status(201).json({
+        message: created + ' created, ' + updated + ' updated',
+        created, updated, errors, totalRows: records.length,
+      });
+    } catch (err) { next(err); }
+  }
+);
 
 module.exports = router;
