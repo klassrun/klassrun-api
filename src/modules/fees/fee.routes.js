@@ -47,10 +47,21 @@ router.get('/', authenticate, authorize('SCHOOL_ADMIN', 'BURSAR'), async (req, r
     if (!cls) return res.status(404).json({ error: { message: 'Class not found', field: 'classId' } });
     if (!session) return res.status(404).json({ error: { message: 'Session not found', field: 'sessionId' } });
 
-    const students = await prisma.student.findMany({
-      where: { schoolId: req.user.schoolId, classId, archivedAt: null },
+    // enrollment-b2-v1: session-scoped roster. Spec section 2 - who was in this class
+    // THIS session, from Enrollment. Student.classId answers "now", which is a
+    // different question and silently rewrites history after any promotion.
+    const enrolledRows = await prisma.enrollment.findMany({
+      where: { schoolId: req.user.schoolId, sessionId: sessionId, classId: classId },
+      select: { studentId: true },
+    });
+    const enrolledIds = enrolledRows.map((e) => e.studentId);
+    // archivedAt is deliberately NOT filtered (spec 2.2): a student who has
+    // since left was still in this class this session, and dropping them makes
+    // the record shrink. archivedAt is returned so the UI can mark the row.
+    const students = enrolledIds.length === 0 ? [] : await prisma.student.findMany({
+      where: { schoolId: req.user.schoolId, id: { in: enrolledIds } },
       orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
-      select: { id: true, admissionNumber: true, firstName: true, lastName: true },
+      select: { id: true, admissionNumber: true, firstName: true, lastName: true, archivedAt: true },
     });
 
     const studentIds = students.map((s) => s.id);
@@ -65,6 +76,7 @@ router.get('/', authenticate, authorize('SCHOOL_ADMIN', 'BURSAR'), async (req, r
       admissionNumber: s.admissionNumber,
       firstName: s.firstName,
       lastName: s.lastName,
+      archivedAt: s.archivedAt || null, // enrollment-b2-v1
       status: statusById.get(s.id) === 'PAID' ? 'PAID' : 'UNPAID',
     }));
 
@@ -142,10 +154,23 @@ router.post('/bulk-mark', authenticate, authorize('SCHOOL_ADMIN', 'BURSAR'), req
     if (!cls) return res.status(404).json({ error: { message: 'Class not found', field: 'classId' } });
     if (!session) return res.status(404).json({ error: { message: 'Session not found', field: 'sessionId' } });
 
-    const where = { schoolId: req.user.schoolId, classId, archivedAt: null };
-    if (studentIds && studentIds.length > 0) where.id = { in: studentIds };
+    // enrollment-b2-v1: scope the bulk mark to the session roster, and to the SAME
+    // population the GET roster shows - a 'mark all' that silently covers a
+    // different set than the screen is worse than either choice alone.
+    const enrolledRows = await prisma.enrollment.findMany({
+      where: { schoolId: req.user.schoolId, sessionId, classId },
+      select: { studentId: true },
+    });
+    let enrolledIds = enrolledRows.map((e) => e.studentId);
+    if (studentIds && studentIds.length > 0) {
+      const asked = new Set(studentIds);
+      enrolledIds = enrolledIds.filter((id) => asked.has(id));
+    }
 
-    const students = await prisma.student.findMany({ where, select: { id: true } });
+    const students = enrolledIds.length === 0 ? [] : await prisma.student.findMany({
+      where: { schoolId: req.user.schoolId, id: { in: enrolledIds } },
+      select: { id: true },
+    });
     if (students.length === 0) return res.json({ marked: 0 });
 
     await prisma.$transaction(

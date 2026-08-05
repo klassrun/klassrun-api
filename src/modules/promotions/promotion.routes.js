@@ -91,8 +91,18 @@ router.get('/eligibility', authenticate, authorize('SCHOOL_ADMIN'), async (req, 
     const sessRes = await resolveSession(req, req.query.sessionId);
     if (!sessRes.ok) return res.status(sessRes.status).json({ error: { message: sessRes.message, field: sessRes.field } });
 
-    const students = await prisma.student.findMany({
-      where: { schoolId: req.user.schoolId, classId: clsRes.cls.id, archivedAt: null },
+    // enrollment-b2-v1: session-scoped roster. Spec section 2 - who was in this class
+    // THIS session, from Enrollment. Student.classId answers "now", which is a
+    // different question and silently rewrites history after any promotion.
+    const enrolledRows = await prisma.enrollment.findMany({
+      where: { schoolId: req.user.schoolId, sessionId: sessRes.session.id, classId: clsRes.cls.id },
+      select: { studentId: true },
+    });
+    const enrolledIds = enrolledRows.map((e) => e.studentId);
+    // archived students ARE excluded here: promotion is a forward-looking
+    // decision, not a record of the session. You do not promote someone gone.
+    const students = enrolledIds.length === 0 ? [] : await prisma.student.findMany({
+      where: { schoolId: req.user.schoolId, id: { in: enrolledIds }, archivedAt: null },
       orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
       select: { id: true, admissionNumber: true, firstName: true, middleName: true, lastName: true },
     });

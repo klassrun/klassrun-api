@@ -61,10 +61,21 @@ router.get('/grid', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, ne
     const sessRes = await resolveSession(req, req.query.sessionId);
     if (!sessRes.ok) return res.status(sessRes.status).json({ error: { message: sessRes.message, field: sessRes.field } });
 
-    const students = await prisma.student.findMany({
-      where: { schoolId: req.user.schoolId, classId: clsRes.cls.id, archivedAt: null },
+    // enrollment-b2-v1: session-scoped roster. Spec section 2 - who was in this class
+    // THIS session, from Enrollment. Student.classId answers "now", which is a
+    // different question and silently rewrites history after any promotion.
+    const enrolledRows = await prisma.enrollment.findMany({
+      where: { schoolId: req.user.schoolId, sessionId: sessRes.session.id, classId: clsRes.cls.id },
+      select: { studentId: true },
+    });
+    const enrolledIds = enrolledRows.map((e) => e.studentId);
+    // archivedAt is deliberately NOT filtered (spec 2.2): a student who has
+    // since left was still in this class this session, and dropping them makes
+    // the record shrink. archivedAt is returned so the UI can mark the row.
+    const students = enrolledIds.length === 0 ? [] : await prisma.student.findMany({
+      where: { schoolId: req.user.schoolId, id: { in: enrolledIds } },
       orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
-      select: { id: true, admissionNumber: true, firstName: true, lastName: true, middleName: true },
+      select: { id: true, admissionNumber: true, firstName: true, lastName: true, middleName: true, archivedAt: true },
     });
     const records = await prisma.attendanceRecord.findMany({
       where: { schoolId: req.user.schoolId, sessionId: sessRes.session.id, term, studentId: { in: students.map((s) => s.id) } },
