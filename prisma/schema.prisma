@@ -582,6 +582,28 @@ model Student {
   @@map("students")
 }
 
+// enrollment-b1-v1: MOLEK-REBUILD-SPEC section 2 (NORMATIVE). A student's class is a
+// property of the (student, session) pair, not of the student. Student.classId
+// survives ONLY as a denormalised "where is this student now" cache (2.1); it
+// is never the source of truth for anything historical.
+//
+// Declares no Prisma relations, by house convention (same as the financial
+// models). The foreign keys exist at the database level.
+model Enrollment {
+  id        String   @id @default(uuid())
+  schoolId  String
+  studentId String
+  sessionId String
+  classId   String
+  isCurrent Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([studentId, sessionId])
+  @@index([schoolId, sessionId, classId])
+  @@map("enrollments")
+}
+
 model ResultEntry {
   id        String      @id @default(uuid())
   term      SessionTerm

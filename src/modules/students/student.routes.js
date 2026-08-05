@@ -194,15 +194,43 @@ router.post('/', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites
 
     // fix3-admission-v1: resolve auto-generated admission numbers with a
     // collision retry on the existing @@unique([schoolId, admissionNumber]).
+    // enrollment-b1-v1: an Enrollment row has to anchor to a session. Without a
+    // current one there is nothing to anchor to, and a missing row degrades
+    // silently into an empty roster rather than a loud failure (spec 2.2).
+    const currentSession = await prisma.academicSession.findFirst({
+      where: { schoolId: req.user.schoolId, isCurrent: true },
+      select: { id: true },
+    });
+    if (!currentSession) {
+      return res.status(400).json({
+        error: { message: 'Set a current academic session before adding students.', field: 'sessionId' },
+      });
+    }
+
     let created = null;
     const autoGen = admissionNumberVal === null;
     const seq = autoGen ? await nextAdmissionNumber(req.user.schoolId) : null;
     for (let attempt = 0; attempt < 6; attempt++) {
       if (autoGen) data.admissionNumber = seq.stem + String(seq.n + attempt).padStart(3, '0');
       try {
-        created = await prisma.student.create({
-          data,
-          include: { class: { select: { id: true, name: true } } },
+        // enrollment-b1-v1: the transaction lives INSIDE the retry loop on purpose.
+        // A P2002 collision on the auto-generated admission number rolls the
+        // whole attempt back, so a retry can never leave an orphan enrollment.
+        created = await prisma.$transaction(async (tx) => {
+          const st = await tx.student.create({
+            data,
+            include: { class: { select: { id: true, name: true } } },
+          });
+          await tx.enrollment.create({
+            data: {
+              schoolId: req.user.schoolId,
+              studentId: st.id,
+              sessionId: currentSession.id,
+              classId: st.classId,
+              isCurrent: true,
+            },
+          });
+          return st;
         });
         break;
       } catch (e) {
@@ -304,10 +332,35 @@ router.patch('/:id', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWr
     }
 
     try {
-      const updated = await prisma.student.update({
-        where: { id },
-        data,
-        include: { class: { select: { id: true, name: true } } },
+      const updated = await prisma.$transaction(async (tx) => {
+        const st = await tx.student.update({
+          where: { id },
+          data,
+          include: { class: { select: { id: true, name: true } } },
+        });
+        // enrollment-b1-v1: a classId change HERE is a correction - the student was
+        // filed in the wrong class - so it rewrites the CURRENT session row.
+        // Promotion is the only operation that enrolls into a new session.
+        if (data.classId) {
+          const ses = await tx.academicSession.findFirst({
+            where: { schoolId: req.user.schoolId, isCurrent: true },
+            select: { id: true },
+          });
+          if (ses) {
+            await tx.enrollment.upsert({
+              where: { studentId_sessionId: { studentId: st.id, sessionId: ses.id } },
+              update: { classId: st.classId, isCurrent: true },
+              create: {
+                schoolId: req.user.schoolId,
+                studentId: st.id,
+                sessionId: ses.id,
+                classId: st.classId,
+                isCurrent: true,
+              },
+            });
+          }
+        }
+        return st;
       });
 
       recordAcademicEvent('STUDENT_UPDATED', {

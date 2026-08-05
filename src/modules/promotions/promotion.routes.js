@@ -259,6 +259,20 @@ router.post('/execute', authenticate, authorize('SCHOOL_ADMIN'), requireActiveFo
         const isPromote = d.verb === 'PROMOTE';
         if (isPromote) {
           await tx.student.update({ where: { id: d.studentId }, data: { classId: tgtRes.cls.id } });
+          // enrollment-b1-v1: keep Enrollment in step with the cache, same transaction.
+          // B1 stays SAME-session; session-advancing promotion (spec 7.3, the
+          // fix for the cohort merge) lands in B3.
+          await tx.enrollment.upsert({
+            where: { studentId_sessionId: { studentId: d.studentId, sessionId: sessRes.session.id } },
+            update: { classId: tgtRes.cls.id, isCurrent: true },
+            create: {
+              schoolId: req.user.schoolId,
+              studentId: d.studentId,
+              sessionId: sessRes.session.id,
+              classId: tgtRes.cls.id,
+              isCurrent: true,
+            },
+          });
         }
         const rec = await tx.promotionRecord.create({
           data: {
@@ -355,7 +369,7 @@ router.post('/:id/reverse', authenticate, authorize('SCHOOL_ADMIN'), requireActi
     const { id } = req.params;
     const rec = await prisma.promotionRecord.findFirst({
       where: { id, schoolId: req.user.schoolId },
-      select: { id: true, decision: true, studentId: true, fromClassId: true, toClassId: true, reversedAt: true },
+      select: { id: true, decision: true, studentId: true, fromClassId: true, toClassId: true, reversedAt: true, sessionId: true }, // enrollment-b1-v1
     });
     if (!rec) return res.status(404).json({ error: { message: 'Promotion record not found' } });
     if (rec.reversedAt) {
@@ -373,6 +387,12 @@ router.post('/:id/reverse', authenticate, authorize('SCHOOL_ADMIN'), requireActi
         });
         if (student && student.classId === rec.toClassId) {
           await tx.student.update({ where: { id: rec.studentId }, data: { classId: rec.fromClassId } });
+          // enrollment-b1-v1: the enrollment must follow the cache back, or the row
+          // keeps pointing at a class the student is no longer in.
+          await tx.enrollment.updateMany({
+            where: { studentId: rec.studentId, sessionId: rec.sessionId },
+            data: { classId: rec.fromClassId },
+          });
           restoredClassId = rec.fromClassId;
         }
       }
