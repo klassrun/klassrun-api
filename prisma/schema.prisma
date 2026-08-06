@@ -752,6 +752,10 @@ model PromotionRecord {
   student     Student         @relation(fields: [studentId], references: [id], onDelete: Cascade)
   sessionId   String
   session     AcademicSession @relation(fields: [sessionId], references: [id])
+  // enrollment-b3-v1: the session promoted INTO. Nullable because pre-B3 rows were
+  // same-session; those are backfilled to sessionId. No Prisma relation, by
+  // house convention - the FK lives in the database.
+  targetSessionId String?
   fromClassId String
   fromClass   Class           @relation("PromotionFrom", fields: [fromClassId], references: [id], onDelete: Restrict)
   toClassId   String?

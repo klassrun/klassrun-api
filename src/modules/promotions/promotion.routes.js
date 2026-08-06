@@ -196,6 +196,27 @@ router.post('/execute', authenticate, authorize('SCHOOL_ADMIN'), requireActiveFo
     const sessRes = await resolveSession(req, body.sessionId);
     if (!sessRes.ok) return res.status(sessRes.status).json({ error: { message: sessRes.message, field: sessRes.field } });
 
+    // enrollment-b3-v1: body.sessionId is the SOURCE - the session whose results are
+    // being judged. The target is the school's current session. Promoting
+    // within one session merges the promoted cohort with whoever was already
+    // in the target class that session, and the two cannot be told apart
+    // afterwards (spec 7.3). So it is refused, not warned about.
+    const targetSession = await prisma.academicSession.findFirst({
+      where: { schoolId: req.user.schoolId, isCurrent: true },
+      select: { id: true, name: true },
+    });
+    if (!targetSession) {
+      return res.status(400).json({ error: { message: 'Set a current academic session before promoting.', field: 'sessionId' } });
+    }
+    if (targetSession.id === sessRes.session.id) {
+      return res.status(400).json({
+        error: {
+          message: 'Create the next academic session and set it as current before promoting. Promoting inside a single session merges the two cohorts and cannot be undone from the data.',
+          field: 'sessionId',
+        },
+      });
+    }
+
     if (!Array.isArray(body.decisions) || body.decisions.length === 0) {
       return res.status(400).json({ error: { message: 'decisions must be a non-empty array', field: 'decisions' } });
     }
@@ -214,9 +235,18 @@ router.post('/execute', authenticate, authorize('SCHOOL_ADMIN'), requireActiveFo
     }
     const requestedIds = norm.map((d) => d.studentId);
 
-    // Only active students currently in the source class are eligible.
-    const students = await prisma.student.findMany({
-      where: { schoolId: req.user.schoolId, classId: srcRes.cls.id, archivedAt: null, id: { in: requestedIds } },
+    // enrollment-b3-v1: eligibility comes from Enrollment for the SOURCE session,
+    // exactly as GET /eligibility does. Reading Student.classId here asks
+    // "who is in that class NOW", so once a promotion has advanced anyone,
+    // the screen and the executed set silently disagree.
+    const srcEnrolled = await prisma.enrollment.findMany({
+      where: { schoolId: req.user.schoolId, sessionId: sessRes.session.id, classId: srcRes.cls.id },
+      select: { studentId: true },
+    });
+    const requestedSet = new Set(requestedIds);
+    const srcEnrolledIds = srcEnrolled.map((e) => e.studentId).filter((sid) => requestedSet.has(sid));
+    const students = srcEnrolledIds.length === 0 ? [] : await prisma.student.findMany({
+      where: { schoolId: req.user.schoolId, id: { in: srcEnrolledIds }, archivedAt: null },
       select: { id: true, classId: true },
     });
     const studentById = {};
@@ -256,6 +286,7 @@ router.post('/execute', authenticate, authorize('SCHOOL_ADMIN'), requireActiveFo
         sourceClassId: srcRes.cls.id,
         targetClassId: tgtRes.cls.id,
         sessionId: sessRes.session.id,
+        targetSessionId: targetSession.id, // enrollment-b3-v1
         term,
       });
     }
@@ -269,16 +300,21 @@ router.post('/execute', authenticate, authorize('SCHOOL_ADMIN'), requireActiveFo
         const isPromote = d.verb === 'PROMOTE';
         if (isPromote) {
           await tx.student.update({ where: { id: d.studentId }, data: { classId: tgtRes.cls.id } });
-          // enrollment-b1-v1: keep Enrollment in step with the cache, same transaction.
-          // B1 stays SAME-session; session-advancing promotion (spec 7.3, the
-          // fix for the cohort merge) lands in B3.
+          // enrollment-b3-v1: the SOURCE row is history now. It KEEPS its class - that
+          // is where the student actually sat that session - and only stops
+          // being current. The target session gets its own row. Upsert, not
+          // create, so an undone-then-redone promotion does not collide.
+          await tx.enrollment.updateMany({
+            where: { studentId: d.studentId, sessionId: sessRes.session.id },
+            data: { isCurrent: false },
+          });
           await tx.enrollment.upsert({
-            where: { studentId_sessionId: { studentId: d.studentId, sessionId: sessRes.session.id } },
+            where: { studentId_sessionId: { studentId: d.studentId, sessionId: targetSession.id } },
             update: { classId: tgtRes.cls.id, isCurrent: true },
             create: {
               schoolId: req.user.schoolId,
               studentId: d.studentId,
-              sessionId: sessRes.session.id,
+              sessionId: targetSession.id,
               classId: tgtRes.cls.id,
               isCurrent: true,
             },
@@ -293,6 +329,7 @@ router.post('/execute', authenticate, authorize('SCHOOL_ADMIN'), requireActiveFo
             schoolId: req.user.schoolId,
             studentId: d.studentId,
             sessionId: sessRes.session.id,
+            targetSessionId: targetSession.id, // enrollment-b3-v1
             fromClassId: srcRes.cls.id,
             toClassId: isPromote ? tgtRes.cls.id : null,
             decidedById: req.user.id,
@@ -312,6 +349,7 @@ router.post('/execute', authenticate, authorize('SCHOOL_ADMIN'), requireActiveFo
       actorId: req.user.id,
       metadata: {
         sessionId: sessRes.session.id,
+        targetSessionId: targetSession.id, // enrollment-b3-v1
         fromClassId: srcRes.cls.id,
         toClassId: tgtRes.cls.id,
         term,
@@ -328,6 +366,7 @@ router.post('/execute', authenticate, authorize('SCHOOL_ADMIN'), requireActiveFo
       sourceClassId: srcRes.cls.id,
       targetClassId: tgtRes.cls.id,
       sessionId: sessRes.session.id,
+      targetSessionId: targetSession.id, // enrollment-b3-v1
       term,
     });
   } catch (err) {
@@ -379,7 +418,7 @@ router.post('/:id/reverse', authenticate, authorize('SCHOOL_ADMIN'), requireActi
     const { id } = req.params;
     const rec = await prisma.promotionRecord.findFirst({
       where: { id, schoolId: req.user.schoolId },
-      select: { id: true, decision: true, studentId: true, fromClassId: true, toClassId: true, reversedAt: true, sessionId: true }, // enrollment-b1-v1
+      select: { id: true, decision: true, studentId: true, fromClassId: true, toClassId: true, reversedAt: true, sessionId: true, targetSessionId: true }, // enrollment-b3-v1
     });
     if (!rec) return res.status(404).json({ error: { message: 'Promotion record not found' } });
     if (rec.reversedAt) {
@@ -397,12 +436,27 @@ router.post('/:id/reverse', authenticate, authorize('SCHOOL_ADMIN'), requireActi
         });
         if (student && student.classId === rec.toClassId) {
           await tx.student.update({ where: { id: rec.studentId }, data: { classId: rec.fromClassId } });
-          // enrollment-b1-v1: the enrollment must follow the cache back, or the row
-          // keeps pointing at a class the student is no longer in.
-          await tx.enrollment.updateMany({
-            where: { studentId: rec.studentId, sessionId: rec.sessionId },
-            data: { classId: rec.fromClassId },
-          });
+          // enrollment-b3-v1: undo BOTH sides of an advancing promotion. The target
+          // session's row was created BY this promotion, so it goes. The source
+          // session's row is the student's real history and keeps its class -
+          // it only regains isCurrent.
+          const advanced = !!rec.targetSessionId && rec.targetSessionId !== rec.sessionId;
+          if (advanced) {
+            await tx.enrollment.deleteMany({
+              where: { studentId: rec.studentId, sessionId: rec.targetSessionId },
+            });
+            await tx.enrollment.updateMany({
+              where: { studentId: rec.studentId, sessionId: rec.sessionId },
+              data: { isCurrent: true },
+            });
+          } else {
+            // A pre-B3 same-session record: that row was rewritten in place, so
+            // the only correct undo is to write the old class back into it.
+            await tx.enrollment.updateMany({
+              where: { studentId: rec.studentId, sessionId: rec.sessionId },
+              data: { classId: rec.fromClassId },
+            });
+          }
           restoredClassId = rec.fromClassId;
         }
       }
