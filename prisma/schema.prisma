@@ -328,6 +328,11 @@ model Subscription {
   paystackSubId  String?
   paystackCustId String?
   paystackRef    String?            @unique // pay-1-paystack-ref
+  // pricelock-v1: the price this school was quoted, in kobo, and the plan it was
+  // quoted for. Null until a first checkout. Raising PRICE_* must never make
+  // an already-quoted school fail PAY_UNDERPAID - that error is terminal.
+  priceKobo      Int?
+  priceKoboPlan  String?
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 

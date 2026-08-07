@@ -70,7 +70,25 @@ async function activateFromReference(reference, opts) {
     const e = new Error('Transaction metadata missing schoolId/plan'); e.code = 'PAY_BAD_METADATA'; throw e;
   }
 
-  const price = paystack.priceForPlan(plan);
+  // pricelock-v1: the subscription is loaded BEFORE the money checks, because
+  // the price a school owes is the price it was QUOTED at checkout - not
+  // whatever PRICE_* says when the webhook lands.
+  const sub = await prisma.subscription.findUnique({ where: { schoolId } });
+  if (!sub) { const e = new Error('No subscription for school ' + schoolId); e.code = 'PAY_NO_SUB'; throw e; }
+
+  // pricelock-v1: the replay check also moves ahead of the money checks. An
+  // already-applied payment must not be re-validated against a price that
+  // may have moved since it was applied.
+  if (sub.paystackRef === reference) {
+    return { activated: false, alreadyProcessed: true, status: sub.status, plan: sub.plan };
+  }
+
+  // pricelock-v1: per-plan on purpose. A school locked at starter that upgrades
+  // to premium must be charged premium's CURRENT price, not its old figure.
+  const lockedKobo = (sub.priceKoboPlan === plan && Number.isInteger(sub.priceKobo) && sub.priceKobo >= 100)
+    ? sub.priceKobo
+    : null;
+  const price = lockedKobo || paystack.priceForPlan(plan);
   // pay2-hardening-v1: never compare money against garbage. If the resolved
   // price is not a sane integer, fail retryable so no payment is lost while
   // the env is fixed.
@@ -80,12 +98,6 @@ async function activateFromReference(reference, opts) {
   }
   if (typeof txn.amount !== 'number' || txn.amount < price) {
     const e = new Error('Amount ' + txn.amount + ' below plan price ' + price); e.code = 'PAY_UNDERPAID'; throw e;
-  }
-
-  const sub = await prisma.subscription.findUnique({ where: { schoolId } });
-  if (!sub) { const e = new Error('No subscription for school ' + schoolId); e.code = 'PAY_NO_SUB'; throw e; }
-  if (sub.paystackRef === reference) {
-    return { activated: false, alreadyProcessed: true, status: sub.status, plan: sub.plan };
   }
 
   const endDate = resolveEndDate(sub); // pay2-hardening-v1 never-shrink
@@ -98,6 +110,10 @@ async function activateFromReference(reference, opts) {
       endDate,
       paystackRef: reference,
       paystackCustId: (txn.customer && txn.customer.customer_code) || sub.paystackCustId || null,
+      // pricelock-v1: confirm the lock against what was actually validated, so a
+      // paying school's price is settled by payment rather than by a quote.
+      priceKobo: price,
+      priceKoboPlan: plan,
     },
   });
 

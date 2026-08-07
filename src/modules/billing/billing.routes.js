@@ -23,7 +23,13 @@ router.post('/initialize', authenticate, authorize('SCHOOL_ADMIN'), async (req, 
     if (!paystack.VALID_PLANS.includes(plan)) {
       return res.status(400).json({ error: { message: 'Invalid plan', field: 'plan' } });
     }
-    const amountKobo = paystack.priceForPlan(plan);
+    // pricelock-v1: quote this school's locked price when it has one for THIS
+    // plan, otherwise the current env price.
+    const sub = await prisma.subscription.findUnique({ where: { schoolId: req.user.schoolId } });
+    const lockedKobo = (sub && sub.priceKoboPlan === plan && Number.isInteger(sub.priceKobo) && sub.priceKobo >= 100)
+      ? sub.priceKobo
+      : null;
+    const amountKobo = lockedKobo || paystack.priceForPlan(plan);
     if (!amountKobo || amountKobo < 100) {
       return res.status(500).json({ error: { message: 'Plan price not configured' } });
     }
@@ -57,6 +63,20 @@ router.post('/initialize', authenticate, authorize('SCHOOL_ADMIN'), async (req, 
       return res.status(502).json({ error: { message: 'Could not start payment. Please try again.' } });
     }
 
+    // pricelock-v1: persist the quote so the webhook validates against the number
+    // this school was SHOWN. Deliberately non-fatal: if the write fails the
+    // school can still pay, it just falls back to the env price on activation.
+    if (!lockedKobo && sub) {
+      try {
+        await prisma.subscription.update({
+          where: { schoolId: req.user.schoolId },
+          data: { priceKobo: amountKobo, priceKoboPlan: plan },
+        });
+      } catch (e) {
+        console.error('[billing/initialize] price lock not written:', e.message);
+      }
+    }
+
     return res.status(200).json({
       authorizationUrl: init.authorization_url,
       reference: init.reference,
@@ -80,9 +100,22 @@ router.get('/verify/:reference', authenticate, authorize('SCHOOL_ADMIN'), async 
 });
 
 // gate2-billing-plans + pay2-hardening-v1-period
-router.get('/plans', authenticate, authorize('SCHOOL_ADMIN'), (req, res) => {
-  const periodLabel = PERIOD_DAYS === 30 ? 'month' : PERIOD_DAYS === 120 ? 'term' : PERIOD_DAYS + ' days';
-  res.json({ prices: paystack.planPrices(), currency: 'NGN', periodDays: PERIOD_DAYS, periodLabel });
+router.get('/plans', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
+  try {
+    const periodLabel = PERIOD_DAYS === 30 ? 'month' : PERIOD_DAYS === 120 ? 'term' : PERIOD_DAYS + ' days';
+    const prices = paystack.planPrices();
+    // pricelock-v1: show this school ITS price. This route exists so the words on
+    // the Subscribe page can never drift from the billing math, and a locked
+    // school seeing the list price would be exactly that drift.
+    const sub = await prisma.subscription.findUnique({ where: { schoolId: req.user.schoolId } });
+    let lockedPlan = null;
+    if (sub && sub.priceKoboPlan && Number.isInteger(sub.priceKobo) && sub.priceKobo >= 100
+        && prices[sub.priceKoboPlan] !== undefined) {
+      prices[sub.priceKoboPlan] = sub.priceKobo;
+      lockedPlan = sub.priceKoboPlan;
+    }
+    res.json({ prices, currency: 'NGN', periodDays: PERIOD_DAYS, periodLabel, lockedPlan });
+  } catch (err) { next(err); }
 });
 
 module.exports = router;
