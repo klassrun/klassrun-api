@@ -97,12 +97,22 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), requireActiveF
     });
     if (!session) return res.status(404).json({ error: { message: 'Session not found', field: 'sessionId' } });
 
-    const students = await prisma.student.findMany({
-      where: { schoolId: req.user.schoolId, classId: cls.id, archivedAt: null },
+    // b4-rc-enrollment-cohort: cohort is the (session,class) Enrollment set, not the
+    // Student.classId cache. Ranking pool, classSize and the "of N" denominator must
+    // reflect who was enrolled in THIS class for THIS session, or regenerating a past
+    // term after a promotion ranks students against their current classmates (MOLEK
+    // class-position bug). §2 normative: class = (student, session) pair.
+    const enrolled = await prisma.enrollment.findMany({
+      where: { schoolId: req.user.schoolId, sessionId: session.id, classId: cls.id },
+      select: { studentId: true },
+    });
+    const enrolledIds = enrolled.map((e) => e.studentId);
+    const students = enrolledIds.length === 0 ? [] : await prisma.student.findMany({
+      where: { schoolId: req.user.schoolId, id: { in: enrolledIds }, archivedAt: null },
       orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
     });
     if (students.length === 0) {
-      return res.status(400).json({ error: { message: 'No active students in this class' } });
+      return res.status(400).json({ error: { message: 'No students were enrolled in this class for this session' } });
     }
     const studentIds = students.map((s) => s.id);
 
@@ -297,13 +307,27 @@ router.get('/', authenticate, async (req, res, next) => {
     }
     if (term) where.term = term;
 
+    // b4-rc-enrollment-list: when a session is specified, resolve class membership
+    // through Enrollment (who was in this class THAT session), not the Student.classId
+    // cache. classId alone keeps the current-"now" list, which §2.1 sanctions.
     let studentFilter = null;
     if (req.query.classId) {
-      const ids = await prisma.student.findMany({
-        where: { schoolId: req.user.schoolId, classId: String(req.query.classId) },
-        select: { id: true },
-      });
-      studentFilter = ids.map((s) => s.id);
+      const classId = String(req.query.classId);
+      let idList;
+      if (req.query.sessionId) {
+        const enr = await prisma.enrollment.findMany({
+          where: { schoolId: req.user.schoolId, sessionId: String(req.query.sessionId), classId },
+          select: { studentId: true },
+        });
+        idList = enr.map((e) => e.studentId);
+      } else {
+        const studs = await prisma.student.findMany({
+          where: { schoolId: req.user.schoolId, classId },
+          select: { id: true },
+        });
+        idList = studs.map((s) => s.id);
+      }
+      studentFilter = idList;
       where.studentId = { in: studentFilter };
     }
 
