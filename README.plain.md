@@ -92,6 +92,49 @@ Right now these locks are in **"watch mode."** They quietly note what they *woul
 
 ---
 
+## Getting it running (for whoever sets it up)
+
+This engine is a Node.js program. Someone technical sets it up once on a machine; after that it runs itself on the server. Here's the whole local setup in plain steps — each boxed line is a command typed into a terminal.
+
+**You need first:** Node.js (version 20 or newer) and PostgreSQL (the database) installed on the machine.
+
+**1. Get the code's building blocks.**
+```
+npm install
+```
+This downloads everything the engine depends on.
+
+**2. Create an empty database** for it to use:
+```
+psql -U postgres -c "CREATE DATABASE klassrun_db;"
+```
+
+**3. Set up the secrets file.** Copy the example, then fill in two things — the database address (`DATABASE_URL`) and a random secret used to sign logins (`JWT_SECRET`):
+```
+cp .env.example .env
+```
+The AI and payment keys can stay blank for basic local work.
+
+**4. Build the tables and starter data:**
+```
+npx prisma migrate dev
+npm run db:seed
+npm run db:seed:super-admin
+```
+The last line creates your own top-level admin account (it reads your details from the secrets file).
+
+**5. Start it:**
+```
+npm run dev
+```
+It listens on **port 4000**. To confirm it's alive, open `http://localhost:4000/api/health` in a browser — it should reply `{"status":"ok"}`.
+
+**On the real server it's simpler.** The engine lives on **Render** and **redeploys itself automatically** whenever new code is pushed to the `main` branch — no manual steps. The database is **Neon**. Any new setting has to be added on the Render dashboard *before* the new code goes live, or the engine boots in a broken state.
+
+> **One Nigerian-ISP quirk worth knowing:** some networks (notably MTN) block the port the database normally uses. When that happens, database updates are applied by hand through Neon's web-based SQL editor instead of the usual command. This is expected, and the technical team has the exact steps.
+
+---
+
 ## Where it lives and how it's kept safe
 
 - **Hosting:** the engine runs on **Render**; the database is **Neon** (PostgreSQL). The parent portal, AI, email (Resend), and image hosting (Cloudinary) are all wired in.
