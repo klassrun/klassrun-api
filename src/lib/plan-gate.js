@@ -1,5 +1,5 @@
 // src/lib/plan-gate.js
-// gate-1-plan-gate-lib + pay2-hardening-v1 + tiermap-v1
+// gate-1-plan-gate-lib + pay2-hardening-v1 + tiermap-v1 + tiermap-v2
 //
 // Two-axis entitlement gate for Klassrun. Ships DORMANT (observe): it computes
 // and LOGS what it WOULD block, then allows the request through. Flip
@@ -22,13 +22,14 @@
 // future, computed on read - no cron, no status rewrites. Trials stay hard
 // at trialEndsAt; grace is for PAID lapse only.
 //
-// tiermap-v1: PLAN_FEATURES now matches the July 2026 pricing page exactly -
-// Starter is lesson planning only, Standard adds the exam office (exam
-// questions + question bank + letterhead + scheme upload), Premium is the
-// whole school (results, report cards, students, attendance, behaviour,
-// promotion, AI comments, fees, bursar, portal). NERDC alignment moves DOWN
-// to Starter. NOTE: the first enforcement pass still blocks the Starter
-// boundary only, so a paying STANDARD school can technically reach the
+// tiermap-v2: PLAN_FEATURES matches the August 2026 pricing (NGN 20k/35k/55k).
+// Starter now runs the school's operations (student records, results, report
+// cards, attendance, behaviour, promotion) alongside lesson notes, schemes and
+// NERDC alignment. Standard adds the exam office (exam questions, question
+// bank, letterhead, scheme upload) plus AI report-card comments. Premium is
+// fees, bursar, parent portal, CBT and CMS/notifications/analytics. This
+// supersedes tiermap-v1's July map. NOTE: the first enforcement pass still
+// blocks the Starter boundary only, so a paying STANDARD school can reach the
 // premium-mapped writes until enforcement pass 2 lands (Phase B).
 
 const prisma = require('../config/db');
@@ -49,12 +50,12 @@ const PLAN_FEATURES = {
   BRANDING:                    { minTier: 'standard' }, // tiermap-v1
   NERDC_ALIGNMENT:             { minTier: 'starter'  }, // tiermap-v1
   SCHEME_UPLOAD:               { minTier: 'standard' },
-  RESULTS_REPORTCARDS:         { minTier: 'premium'  }, // tiermap-v1
-  AI_COMMENTS:                 { minTier: 'premium'  }, // tiermap-v1
-  ATTENDANCE:                  { minTier: 'premium'  }, // tiermap-v1
-  BEHAVIOUR:                   { minTier: 'premium'  }, // tiermap-v1
-  STUDENTS:                    { minTier: 'premium'  }, // tiermap-v1
-  PROMOTION:                   { minTier: 'premium'  }, // tiermap-v1
+  RESULTS_REPORTCARDS:         { minTier: 'starter'  }, // tiermap-v2
+  AI_COMMENTS:                 { minTier: 'standard' }, // tiermap-v2
+  ATTENDANCE:                  { minTier: 'starter'  }, // tiermap-v2
+  BEHAVIOUR:                   { minTier: 'starter'  }, // tiermap-v2
+  STUDENTS:                    { minTier: 'starter'  }, // tiermap-v2
+  PROMOTION:                   { minTier: 'starter'  }, // tiermap-v2
   FEES:                        { minTier: 'premium'  },
   BURSAR_ROLE:                 { minTier: 'premium'  },
   PARENT_PORTAL:               { minTier: 'premium'  },
