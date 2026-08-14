@@ -24,6 +24,7 @@ const { authenticate, authorize } = require('../../middleware/auth');
 const prisma = require('../../config/db');
 const { recordAcademicEvent } = require('../../lib/audit');
 const resultsAggregate = require('../../lib/results-aggregate');
+const { GRADE_BANDS } = require('../../lib/grading'); // pass-mark-v1
 
 const TERMS = ['FIRST', 'SECOND', 'THIRD'];
 function normTerm(value) {
@@ -31,7 +32,13 @@ function normTerm(value) {
   return TERMS.includes(t) ? t : null;
 }
 
-const DEFAULT_THRESHOLD = 50;
+// pass-mark-v1: promotion default tracks grading.js's Pass floor (the lowest
+// band whose remark is exactly 'Pass' = 45), so "Pass at N" and "promote at N"
+// cannot drift. remark === 'Pass' is exact, so 'Weak Pass' (40) will not match;
+// the literal 45 is a defensive floor only if that band ever disappears.
+// Callers may still override with an explicit ?threshold=.
+const PASS_FLOOR = (GRADE_BANDS.find((b) => b.remark === 'Pass') || { min: 45 }).min;
+const DEFAULT_THRESHOLD = PASS_FLOOR; // 45, sourced from grading.js
 function parseThreshold(value) {
   if (value === undefined || value === null || value === '') return DEFAULT_THRESHOLD;
   const n = Number(value);
