@@ -76,8 +76,21 @@ router.get('/grid', authenticate, async (req, res, next) => {
       return res.status(400).json({ error: { message: 'classId does not match the subject', field: 'classId' } });
     }
 
+    // results-enrollment-roster-v1: roster is the (session,class) Enrollment set,
+    // not the Student.classId cache. After a promotion the cache points at the
+    // student's NEW class, so a PAST-session grid built from the cache shows the
+    // wrong cohort (MOLEK class-position bug; class = (student,session) pair).
+    // Fallback to the cache only when NO enrollment is tracked for this
+    // (session,class), so a grid that has data today can never go empty.
+    const enrolledGrid = await prisma.enrollment.findMany({
+      where: { schoolId: req.user.schoolId, sessionId: sessRes.session.id, classId: useClassId },
+      select: { studentId: true },
+    });
+    const rosterWhere = enrolledGrid.length > 0
+      ? { schoolId: req.user.schoolId, id: { in: enrolledGrid.map((e) => e.studentId) }, archivedAt: null }
+      : { schoolId: req.user.schoolId, classId: useClassId, archivedAt: null };
     const students = await prisma.student.findMany({
-      where: { schoolId: req.user.schoolId, classId: useClassId, archivedAt: null },
+      where: rosterWhere,
       orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
       select: { id: true, admissionNumber: true, firstName: true, lastName: true, middleName: true },
     });
@@ -142,8 +155,18 @@ router.post('/', authenticate, requireActiveForWrites, requirePlan('RESULTS_REPO
     });
     if (!student) return res.status(404).json({ error: { message: 'Student not found', field: 'studentId' } });
 
-    if (student.classId !== subjRes.subject.classId) {
-      return res.status(400).json({ error: { message: 'Student is not in this subject\u2019s class', field: 'studentId' } });
+    // results-enrollment-roster-v1: membership is the (student, session) Enrollment
+    // row (unique per student per session), not the Student.classId cache. After a
+    // promotion the cache is the NEW class, so the old guard rejects legitimate
+    // PAST-session entries. Fall back to the cache only when the student has NO
+    // enrollment row for this session, so no working entry regresses.
+    const enrForSession = await prisma.enrollment.findFirst({
+      where: { studentId: student.id, sessionId: sessRes.session.id },
+      select: { classId: true },
+    });
+    const memberClassId = enrForSession ? enrForSession.classId : student.classId;
+    if (memberClassId !== subjRes.subject.classId) {
+      return res.status(400).json({ error: { message: 'Student was not in this subject\u2019s class for this session', field: 'studentId' } });
     }
 
     const comps = {};
