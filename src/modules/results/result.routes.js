@@ -15,7 +15,7 @@
 
 const router = require('express').Router();
 const { requirePlan, requireActiveForWrites } = require('../../lib/plan-gate'); // gate-1-require
-const { authenticate } = require('../../middleware/auth');
+const { authenticate, authorize } = require('../../middleware/auth'); // audit-results-role-v1
 const prisma = require('../../config/db');
 const { recordAcademicEvent } = require('../../lib/audit');
 const grading = require('../../lib/grading');
@@ -59,7 +59,7 @@ function normTerm(value) {
 }
 
 // ── GET /grid ─────────────────────────────────────────────────────────────
-router.get('/grid', authenticate, async (req, res, next) => {
+router.get('/grid', authenticate, authorize('TEACHER', 'SCHOOL_ADMIN'), /* audit-results-role-v1 */ async (req, res, next) => {
   try {
     const { classId, subjectId, sessionId } = req.query;
     const term = normTerm(req.query.term);
@@ -134,7 +134,7 @@ router.get('/grid', authenticate, async (req, res, next) => {
 });
 
 // ── POST / (upsert one entry) ───────────────────────────────────────────────
-router.post('/', authenticate, requireActiveForWrites, requirePlan('RESULTS_REPORTCARDS'), /* gate-1-results-post */ async (req, res, next) => {
+router.post('/', authenticate, authorize('TEACHER', 'SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('RESULTS_REPORTCARDS'), /* gate-1-results-post audit-results-role-v1 */ async (req, res, next) => {
   try {
     const body = req.body || {};
     const term = normTerm(body.term);
