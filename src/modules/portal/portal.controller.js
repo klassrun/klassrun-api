@@ -107,6 +107,11 @@ const portalAccept = async (req, res, next) => {
       await recordAuthEvent('INVITE_FAILED', { req, metadata: { portal: true, reason: 'unknown_token' } });
       return res.status(404).json({ error: { message: 'Invalid or expired invite' } });
     }
+    // audit-portal-invite-reset-v1: an archived student cannot claim a portal
+    // account. authenticatePortal rejects them anyway; failing here says why.
+    if (student.archivedAt) {
+      return res.status(403).json({ error: { message: 'This portal account is no longer active. Contact your school.' } });
+    }
     if (student.portalInviteAccepted) {
       return res.status(400).json({ error: { message: 'This portal invite has already been accepted' } });
     }
@@ -152,9 +157,25 @@ const sendPortalInvite = async (req, res, next) => {
     if (!student) return res.status(404).json({ error: { message: 'Student not found' } });
     if (student.archivedAt) return res.status(400).json({ error: { message: 'Cannot invite an archived student' } });
 
+    // audit-portal-invite-reset-v1: re-inviting an ACCEPTED student used to
+    // flip portalInviteAccepted back to false — silently locking the parent
+    // out and mailing a password-setting token for a live account. A reset is
+    // still possible, but it has to be asked for.
+    const isReset = body.reset === true;
+    if (student.portalInviteAccepted && !isReset) {
+      return res.status(409).json({
+        error: { message: 'This student already has portal access. Send reset: true to issue a new password link.' },
+        code: 'PORTAL_ALREADY_ACCEPTED',
+      });
+    }
+
     const recipient = overrideEmail || student.guardianEmail;
     if (!recipient) {
       return res.status(400).json({ error: { message: 'No email on file. Add a guardian email or pass one in.', field: 'email' } });
+    }
+    // audit-portal-invite-reset-v1: a typo'd address silently mailed nowhere.
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) {
+      return res.status(400).json({ error: { message: 'That email address does not look valid.', field: 'email' } });
     }
 
     const inviteToken = crypto.randomBytes(32).toString('hex');
@@ -162,7 +183,14 @@ const sendPortalInvite = async (req, res, next) => {
 
     await prisma.student.update({
       where: { id: student.id },
-      data: { portalInviteToken: inviteToken, portalInviteExpiresAt: inviteExpiresAt, portalInviteAccepted: false },
+      data: {
+        portalInviteToken: inviteToken,
+        portalInviteExpiresAt: inviteExpiresAt,
+        portalInviteAccepted: false,
+        // audit-portal-invite-reset-v1: on a reset the old password dies at the
+        // moment the link is issued — no window where a stale hash lingers.
+        ...(isReset ? { portalPasswordHash: null } : {}),
+      },
     });
 
     const base = process.env.FRONTEND_URL || 'http://localhost:3000';
@@ -170,7 +198,7 @@ const sendPortalInvite = async (req, res, next) => {
 
     await recordAuthEvent('INVITE_SENT', {
       req, userId: req.user.id, email: recipient, schoolId: req.user.schoolId,
-      metadata: { portal: true, studentId: student.id },
+      metadata: { portal: true, studentId: student.id, portalReset: isReset }, // audit-portal-invite-reset-v1
     });
 
     emailLib.send({
