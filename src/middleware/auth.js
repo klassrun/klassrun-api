@@ -104,6 +104,17 @@ const authenticate = async (req, res, next) => {
       });
     }
 
+    // audit-auth-invite-accepted-v1: an admin password-reset sets
+    // inviteAccepted:false and mints a fresh invite token. JWTs are stateless,
+    // so without this check the teacher's OLD token kept full access for the
+    // rest of its 7-day life. login() already refuses this state; now the two
+    // agree, and the wording matches so the user sees one story.
+    if (!user.inviteAccepted) {
+      return res.status(403).json({
+        error: { message: 'Please accept your invite via the link in your email before logging in.' },
+      });
+    }
+
     // School suspended by super admin
     if (user.school?.status === 'SUSPENDED') {
       return res.status(403).json({

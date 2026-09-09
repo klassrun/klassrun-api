@@ -26,6 +26,7 @@ const { welcomeEmail }  = require('../../lib/email-templates/welcome');
 const { inviteEmail }   = require('../../lib/email-templates/invite');
 const { recordAuthEvent } = require('../../lib/audit');
 const { checkTeacherCap } = require('../../lib/teacher-cap'); // teachercap-wire-v1
+const { invalidateUserCache } = require('../../middleware/auth'); // audit-auth-invite-accepted-v1
 
 const INVITE_TTL_DAYS = 7;
 const TRIAL_DAYS      = 14;
@@ -501,6 +502,7 @@ const acceptInvite = async (req, res, next) => {
         inviteExpiresAt: null,
       },
     });
+    invalidateUserCache(user.id); // audit-auth-invite-accepted-v1: the cache may hold the pre-accept row
 
     const jwtToken  = generateToken(user.id, user.role);
     const portalUrl = user.school?.slug ? slugUtil.buildPortalUrl(user.school.slug) : null;

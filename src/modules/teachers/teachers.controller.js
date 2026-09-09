@@ -233,9 +233,11 @@ const resetTeacherPassword = async (req, res, next) => {
     const newInviteToken      = crypto.randomBytes(32).toString('hex');
     const newInviteExpiresAt  = new Date(Date.now() + INVITE_TTL_DAYS * 24 * 60 * 60 * 1000);
 
-    // Setting password to a random unguessable value effectively "logs out"
-    // any active sessions because their cached password hash won't match.
-    // (More importantly, prevents login until they accept the new invite.)
+    // audit-auth-invite-accepted-v1: this random value only blocks a PASSWORD
+    // login. It does NOT end a live session — a JWT is stateless and never
+    // re-checks the password. What actually ends the session is
+    // inviteAccepted:false below, which authenticate() now honours, plus the
+    // cache invalidation after the update.
     const randomLockedPassword = crypto.randomBytes(48).toString('hex');
 
     await prisma.user.update({
@@ -249,6 +251,7 @@ const resetTeacherPassword = async (req, res, next) => {
         lockedUntil:     null,
       },
     });
+    invalidateUserCache(teacherId); // audit-auth-invite-accepted-v1: same as revoke — effective now, not in 60s
 
     await recordAuthEvent('TEACHER_PASSWORD_RESET', {
       req,
