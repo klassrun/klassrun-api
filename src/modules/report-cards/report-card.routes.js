@@ -297,7 +297,7 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), requireActiveF
 });
 
 // ── GET / (list) ────────────────────────────────────────────────────────────
-router.get('/', authenticate, async (req, res, next) => {
+router.get('/', authenticate, authorize('SCHOOL_ADMIN'), /* audit-reportcard-read-role-v1 */ async (req, res, next) => {
   try {
     const where = { schoolId: req.user.schoolId };
     if (req.query.sessionId) where.sessionId = String(req.query.sessionId);
@@ -358,7 +358,7 @@ router.get('/', authenticate, async (req, res, next) => {
 });
 
 // ── GET /:id ──────────────────────────────────────────────────────────────────
-router.get('/:id', authenticate, async (req, res, next) => {
+router.get('/:id', authenticate, authorize('SCHOOL_ADMIN'), /* audit-reportcard-read-role-v1 */ async (req, res, next) => {
   try {
     const { id } = req.params;
     const card = await prisma.reportCard.findFirst({
