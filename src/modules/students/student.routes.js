@@ -142,7 +142,7 @@ router.post('/', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites
     if (body.admissionNumber !== undefined && body.admissionNumber !== null && String(body.admissionNumber).trim() !== '') {
       const adm = reqString(body.admissionNumber, 'Admission number', MAX_ADMISSION);
       if (!adm.ok) return res.status(400).json({ error: { message: adm.error, field: 'admissionNumber' } });
-      admissionNumberVal = adm.value;
+      admissionNumberVal = adm.value.toUpperCase(); // audit-admission-case-v1
     }
 
     const fn = reqString(body.firstName, 'First name', MAX_NAME);
@@ -284,7 +284,7 @@ router.patch('/:id', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWr
     if ('admissionNumber' in body) {
       const c = reqString(body.admissionNumber, 'Admission number', MAX_ADMISSION);
       if (!c.ok) return res.status(400).json({ error: { message: c.error, field: 'admissionNumber' } });
-      data.admissionNumber = c.value;
+      data.admissionNumber = c.value.toUpperCase(); // audit-admission-case-v1
     }
     if ('firstName' in body) {
       const c = reqString(body.firstName, 'First name', MAX_NAME);
@@ -615,14 +615,17 @@ router.post(
       });
       const classByName = new Map(classes.map((c) => [c.name.trim().toLowerCase(), c.id]));
 
-      const askedAdmissions = records
-        .map((r) => String(r.admission_number || '').trim().toUpperCase())
-        .filter((a) => a !== '');
-      const existing = askedAdmissions.length === 0 ? [] : await prisma.student.findMany({
-        where: { schoolId: req.user.schoolId, admissionNumber: { in: askedAdmissions } },
+      // audit-admission-case-v1: the CSV side was uppercased but the DB match
+      // was not, so a student stored as kr/2026/001 never matched KR/2026/001
+      // from the file and was CREATED a second time — splitting that child's
+      // results, fees, attendance and report cards across two rows. Load the
+      // school's roster and match in JS. Still ONE query (spec 10.3); bulk is
+      // capped at 300 rows and a school roster is a few thousand at most.
+      const existing = await prisma.student.findMany({
+        where: { schoolId: req.user.schoolId },
         select: { id: true, admissionNumber: true, classId: true },
       });
-      const existingByAdmission = new Map(existing.map((s) => [String(s.admissionNumber).toUpperCase(), s]));
+      const existingByAdmission = new Map(existing.map((s) => [String(s.admissionNumber).trim().toUpperCase(), s]));
 
       const errors = [];
       const toCreate = [];
