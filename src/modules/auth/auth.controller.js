@@ -28,6 +28,40 @@ const { recordAuthEvent } = require('../../lib/audit');
 const { checkTeacherCap } = require('../../lib/teacher-cap'); // teachercap-wire-v1
 const { invalidateUserCache } = require('../../middleware/auth'); // audit-auth-invite-accepted-v1
 
+// ── audit-signup-session-v1 ────────────────────────────────────────────────
+// The opening academic session used to be hard-coded to '2025/2026'/'FIRST'.
+// It is isCurrent, so it anchors every Enrollment the school ever writes, and
+// results / report cards / attendance / fees / promotion all resolve through
+// Enrollment(sessionId, classId). Derive it from the signup date instead.
+// Nigerian sessions run Sept->July. Render is UTC and Lagos is UTC+1, so the
+// offset is applied before the month is read — without it the boundary days
+// (Aug 1, Jan 1, May 1) fall into the previous period for their first hour.
+function lagosNow() {
+  return new Date(Date.now() + 60 * 60 * 1000);
+}
+function deriveSessionName(now) {
+  const y = now.getUTCFullYear();
+  const m = now.getUTCMonth() + 1;
+  return m >= 8 ? y + '/' + (y + 1) : (y - 1) + '/' + y;
+}
+function deriveCurrentTerm(now) {
+  const m = now.getUTCMonth() + 1;
+  if (m >= 8) return 'FIRST';   // Aug-Dec
+  if (m <= 4) return 'SECOND';  // Jan-Apr
+  return 'THIRD';               // May-Jul
+}
+// An override has to be YYYY/YYYY spanning consecutive years.
+function validateSessionName(value) {
+  if (typeof value !== 'string') return { ok: false, error: 'sessionName must be text' };
+  const t = value.trim();
+  const m = /^(\d{4})\/(\d{4})$/.exec(t);
+  if (!m) return { ok: false, error: 'sessionName must look like 2026/2027' };
+  if (Number(m[2]) !== Number(m[1]) + 1) {
+    return { ok: false, error: 'sessionName must span two consecutive years, e.g. 2026/2027' };
+  }
+  return { ok: true, value: t };
+}
+
 const INVITE_TTL_DAYS = 7;
 const TRIAL_DAYS      = 14;
 
@@ -88,6 +122,21 @@ const signup = async (req, res, next) => {
     const hashedPassword = await bcrypt.hash(password, 12);
     const trialEndsAt    = new Date(Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
 
+    // audit-signup-session-v1: derive the opening session, or take the
+    // client's explicit sessionName. The TERM is always derived — a school
+    // that needs a different one changes it from the sessions UI.
+    const nowLagos = lagosNow();
+    let openingSessionName = deriveSessionName(nowLagos);
+    const rawSessionName = req.body ? req.body.sessionName : undefined;
+    if (rawSessionName !== undefined && rawSessionName !== null && String(rawSessionName).trim() !== '') {
+      const chk = validateSessionName(rawSessionName);
+      if (!chk.ok) {
+        return res.status(400).json({ error: { message: chk.error, field: 'sessionName' } });
+      }
+      openingSessionName = chk.value;
+    }
+    const openingTerm = deriveCurrentTerm(nowLagos);
+
     const result = await prisma.$transaction(async (tx) => {
       const school = await tx.school.create({
         data: {
@@ -113,8 +162,8 @@ const signup = async (req, res, next) => {
 
       await tx.academicSession.create({
         data: {
-          name: '2025/2026',
-          currentTerm: 'FIRST',
+          name: openingSessionName, // audit-signup-session-v1
+          currentTerm: openingTerm,
           isCurrent: true,
           schoolId: school.id,
         },
