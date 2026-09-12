@@ -18,6 +18,7 @@ const { authenticate, authorize } = require('../../middleware/auth');
 const prisma = require('../../config/db');
 const { recordAcademicEvent } = require('../../lib/audit');
 const { checkGenerationAllowed } = require('../../lib/billing-gate');
+const { logGenerationCost } = require('../../lib/cogs-log'); // genobs-v1
 const { generateReportCardComments } = require('../../lib/anthropic');
 const grading = require('../../lib/grading');
 const { BEHAVIOUR_ATTRS } = require('../../lib/pdf/report-card-pdf');
@@ -160,6 +161,8 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), requireActiveF
         source: 'ai', aiModel: gen.model, aiGeneratedAt: new Date(), generatedById: req.user.id,
       },
     });
+
+    logGenerationCost({ schoolId: req.user.schoolId, kind: 'report-card-comments', model: gen.model, inputTokens: gen.inputTokens, outputTokens: gen.outputTokens }); // genobs-v1
 
     recordAcademicEvent('REPORT_CARD_COMMENT_GENERATED', {
       schoolId: req.user.schoolId, actorId: req.user.id,

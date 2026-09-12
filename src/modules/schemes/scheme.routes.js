@@ -21,6 +21,7 @@ const { recordAcademicEvent } = require('../../lib/audit');
 const { generateSchemeOfWork, ANTHROPIC_MODEL } = require('../../lib/anthropic');
 const { normalizeSubject, normalizeClass, normalizeTerm, buildContextBlock } = require('../../lib/curriculum-context'); // batch-3-phase-3d-curriculum-require
 const { checkGenerationAllowed } = require('../../lib/billing-gate');
+const { logGenerationCost } = require('../../lib/cogs-log'); // genobs-v1
 
 const NOTES_MAX           = 500;
 const WEEK_COUNT_MIN      = 1;
@@ -252,6 +253,8 @@ router.post('/generate', authenticate, authorize('TEACHER'), requireActiveForWri
     });
 
     // Audit
+    logGenerationCost({ schoolId: req.user.schoolId, kind: 'scheme', model: aiResult.model, inputTokens: aiResult.inputTokens, outputTokens: aiResult.outputTokens }); // genobs-v1
+
     recordAcademicEvent('SCHEME_GENERATED', {
       schoolId: req.user.schoolId,
       actorId:  req.user.id,

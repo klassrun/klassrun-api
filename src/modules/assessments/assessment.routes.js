@@ -22,6 +22,7 @@ const { recordAcademicEvent } = require('../../lib/audit');
 const { generateExamQuestions, generateEndOfTermExam, ANTHROPIC_MODEL } = require('../../lib/anthropic');
 const { normalizeSubject, normalizeClass, normalizeTerm, buildContextBlock } = require('../../lib/curriculum-context'); // batch-3-phase-3d-curriculum-require
 const { checkGenerationAllowed } = require('../../lib/billing-gate');
+const { logGenerationCost } = require('../../lib/cogs-log'); // genobs-v1
 
 const TOPIC_MIN      = 3;
 const TOPIC_MAX      = 200;
@@ -216,6 +217,8 @@ router.post('/generate', authenticate, authorize('TEACHER'), requireActiveForWri
       console.error('[bank-save] createMany failed:', err.message);
     }
 
+    logGenerationCost({ schoolId: req.user.schoolId, kind: 'exam-questions', model: aiResult.model, inputTokens: aiResult.inputTokens, outputTokens: aiResult.outputTokens }); // genobs-v1
+
     // Audit
     recordAcademicEvent('QUESTION_GENERATED', {
       schoolId: req.user.schoolId,
@@ -398,6 +401,8 @@ router.post('/generate-end-of-term', authenticate, authorize('TEACHER'), require
     } catch (e) {
       console.error('[bank-save-eot] createMany failed:', e.message);
     }
+
+    logGenerationCost({ schoolId: req.user.schoolId, kind: 'exam-end-of-term', model: aiResult.model, inputTokens: aiResult.inputTokens, outputTokens: aiResult.outputTokens }); // genobs-v1
 
     recordAcademicEvent('QUESTION_GENERATED', {
       schoolId: req.user.schoolId,

@@ -21,6 +21,7 @@ const { recordAcademicEvent } = require('../../lib/audit');
 const { generateLessonNote, ANTHROPIC_MODEL } = require('../../lib/anthropic');
 const { normalizeSubject, normalizeClass, normalizeTerm, buildContextBlock } = require('../../lib/curriculum-context'); // batch-3-phase-3d-curriculum-require
 const { checkGenerationAllowed } = require('../../lib/billing-gate');
+const { logGenerationCost } = require('../../lib/cogs-log'); // genobs-v1
 
 const TOPIC_MIN = 3;
 const TOPIC_MAX = 200;
@@ -288,6 +289,8 @@ router.post('/generate', authenticate, authorize('TEACHER'), requireActiveForWri
         sessionId:    session.id,
       },
     });
+
+    logGenerationCost({ schoolId: req.user.schoolId, kind: 'lesson-note', model: aiResult.model, inputTokens: aiResult.inputTokens, outputTokens: aiResult.outputTokens }); // genobs-v1
 
     // ── Audit ──
     recordAcademicEvent('LESSON_NOTE_GENERATED', {
@@ -626,6 +629,8 @@ router.post('/generate-aligned', authenticate, authorize('TEACHER'), requireActi
         sessionId: session.id,
       },
     });
+
+    logGenerationCost({ schoolId: req.user.schoolId, kind: 'lesson-note-aligned', model: aiResult.model, inputTokens: aiResult.inputTokens, outputTokens: aiResult.outputTokens }); // genobs-v1
 
     recordAcademicEvent('ALIGNED_NOTE_GENERATED', {
       schoolId: req.user.schoolId, actorId: req.user.id,
