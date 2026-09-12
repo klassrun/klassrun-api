@@ -68,18 +68,25 @@ const TRIAL_DAYS      = 14;
 // ───── SIGNUP ────────────────────────────────────────────────────────────────
 const signup = async (req, res, next) => {
   try {
-    const {
+    let {
       email: signupEmail,
       password, firstName, lastName,
       schoolName, schoolAddress, schoolState,
       slug: requestedSlug,
-    } = req.body;
+    } = req.body; // audit-email-case-v1
 
     if (!signupEmail || !password || !firstName || !lastName || !schoolName) {
       return res.status(400).json({
         error: { message: 'All fields are required' },
       });
     }
+
+    // audit-email-case-v1: login() lowercases before its lookup; signup did not.
+    // User.email is globally @unique and Postgres compares it case-SENSITIVELY,
+    // so a capitalised address (phone keyboards autocapitalise) created a row
+    // login could never find. Normalise ONCE here — before the uniqueness
+    // check, the create, the welcome email and the response.
+    signupEmail = String(signupEmail).trim().toLowerCase();
     if (password.length < 8) {
       return res.status(400).json({
         error: { message: 'Password must be at least 8 characters' },
@@ -329,7 +336,7 @@ const login = async (req, res, next) => {
 // ───── INVITE TEACHER ───────────────────────────────────────────────────────
 const inviteTeacher = async (req, res, next) => {
   try {
-    const { email: teacherEmail, firstName, lastName, role: requestedRole } = req.body; // ops-4c-invite-role
+    let { email: teacherEmail, firstName, lastName, role: requestedRole } = req.body; // ops-4c-invite-role audit-email-case-v1
     const INVITABLE_ROLES = ['TEACHER', 'BURSAR'];
     const inviteRole = INVITABLE_ROLES.includes(requestedRole) ? requestedRole : 'TEACHER';
     const { schoolId, id: inviterId } = req.user;
@@ -339,6 +346,11 @@ const inviteTeacher = async (req, res, next) => {
         error: { message: 'Email, first name, and last name are required' },
       });
     }
+
+    // audit-email-case-v1: same defect as signup. accept-invite resolves by
+    // inviteToken, so a capitalised invite ACCEPTS fine and only fails on the
+    // teacher's next login — a silent dead account holding a paid seat.
+    teacherEmail = String(teacherEmail).trim().toLowerCase();
 
     const existing = await prisma.user.findUnique({ where: { email: teacherEmail } });
     if (existing) {
