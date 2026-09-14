@@ -28,9 +28,13 @@ async function resolveClass(req, classId) {
   }
   const cls = await prisma.class.findFirst({
     where: { id: classId, schoolId: req.user.schoolId },
-    select: { id: true, name: true },
+    select: { id: true, name: true, classTeacherId: true }, // classteacher-v1
   });
   if (!cls) return { ok: false, status: 404, message: 'Class not found', field: 'classId' };
+  // classteacher-v1: a TEACHER may only reach the class they are class teacher of.
+  if (req.user.role === 'TEACHER' && cls.classTeacherId !== req.user.id) {
+    return { ok: false, status: 403, message: 'You are not the class teacher for this class', field: 'classId' };
+  }
   return { ok: true, cls };
 }
 
@@ -62,9 +66,32 @@ function validateRatings(input) {
   }
   return { ok: true, value: out };
 }
+// classteacher-v1: the POST body carries no classId, so resolve it the same way
+// both grids already do — studentId + sessionId -> Enrollment -> classId.
+// Enrollment is @@unique([studentId, sessionId]), so there is exactly one.
+// SCHOOL_ADMIN is unrestricted; only TEACHER is narrowed to their own class.
+async function assertClassTeacherForStudent(req, studentId, sessionId) {
+  if (req.user.role !== 'TEACHER') return { ok: true };
+  const enr = await prisma.enrollment.findFirst({
+    where: { schoolId: req.user.schoolId, studentId, sessionId },
+    select: { classId: true },
+  });
+  if (!enr) {
+    return { ok: false, status: 404, message: 'This student has no enrollment for that session', field: 'studentId' };
+  }
+  const cls = await prisma.class.findFirst({
+    where: { id: enr.classId, schoolId: req.user.schoolId },
+    select: { classTeacherId: true },
+  });
+  if (!cls || cls.classTeacherId !== req.user.id) {
+    return { ok: false, status: 403, message: 'You are not the class teacher for this class', field: 'studentId' };
+  }
+  return { ok: true };
+}
+
 
 // ── GET /grid ───────────────────────────────────────────────────────────────
-router.get('/grid', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
+router.get('/grid', authenticate, authorize('SCHOOL_ADMIN', 'TEACHER'), /* classteacher-v1 */ async (req, res, next) => {
   try {
     const term = normTerm(req.query.term);
     if (!term) return res.status(400).json({ error: { message: 'term must be FIRST, SECOND or THIRD', field: 'term' } });
@@ -111,7 +138,7 @@ router.get('/grid', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, ne
 });
 
 // ── POST / (upsert one student's ratings) ─────────────────────────────────────
-router.post('/', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('BEHAVIOUR'), /* gate-1-beh-post */ async (req, res, next) => {
+router.post('/', authenticate, authorize('SCHOOL_ADMIN', 'TEACHER'), requireActiveForWrites, requirePlan('BEHAVIOUR'), /* gate-1-beh-post classteacher-v1 */ async (req, res, next) => {
   try {
     const body = req.body || {};
     const term = normTerm(body.term);
@@ -127,6 +154,9 @@ router.post('/', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites
       select: { id: true },
     });
     if (!student) return res.status(404).json({ error: { message: 'Student not found', field: 'studentId' } });
+    const own = await assertClassTeacherForStudent(req, student.id, sessRes.session.id); // classteacher-v1
+    if (!own.ok) return res.status(own.status).json({ error: { message: own.message, field: own.field } });
+
 
     const rv = validateRatings(body.ratings);
     if (!rv.ok) return res.status(400).json({ error: { message: rv.error, field: 'ratings' } });

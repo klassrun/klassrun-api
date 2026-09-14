@@ -177,11 +177,13 @@ model Class {
   assessments Assessment[]
 
   archivedAt DateTime? // batch-2c-phase-2-class-archive
+  classTeacherId String? // classteacher-v1: scalar FK, no Prisma relation
   updatedAt  DateTime @updatedAt @default(now())
   schemesOfWork  SchemeOfWork[] // batch-3-phase-2-scheme-model
   @@unique([schoolId, name])
   @@index([schoolId]) // NEW
   @@index([schoolId, archivedAt])
+  @@index([schoolId, classTeacherId]) // classteacher-v1
   students Student[] // ops-1-rel-class
   promotionsFrom PromotionRecord[] @relation("PromotionFrom") // ops-3-rel-class-from
   promotionsTo   PromotionRecord[] @relation("PromotionTo") // ops-3-rel-class-to

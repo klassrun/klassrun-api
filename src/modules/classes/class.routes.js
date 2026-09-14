@@ -140,7 +140,7 @@ router.patch('/:id', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, n
       return res.status(404).json({ error: { message: 'Class not found' } });
     }
 
-    const allowed = ['name', 'level'];
+    const allowed = ['name', 'level', 'classTeacherId']; // classteacher-v1
     const data = {};
     const changes = {};
 
@@ -166,6 +166,36 @@ router.patch('/:id', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, n
         if (newLevel !== existing.level) {
           data.level = newLevel;
           changes.level = { from: existing.level, to: newLevel };
+        }
+      } else if (key === 'classTeacherId') {
+        // classteacher-v1: assign or clear the class teacher. The id is validated
+        // against a live TEACHER in the CALLER'S school — schoolId comes from the
+        // token, never the body, so a cross-tenant id cannot be planted. BURSAR
+        // is deliberately not assignable.
+        const raw = req.body.classTeacherId;
+        if (raw === null || raw === '') {
+          if (existing.classTeacherId !== null && existing.classTeacherId !== undefined) {
+            data.classTeacherId = null;
+            changes.classTeacherId = { from: existing.classTeacherId, to: null };
+          }
+        } else if (typeof raw !== 'string') {
+          return res.status(400).json({
+            error: { message: 'classTeacherId must be a teacher id, or null to clear it', field: 'classTeacherId' },
+          });
+        } else {
+          const teacher = await prisma.user.findFirst({
+            where: { id: raw, schoolId: req.user.schoolId, role: 'TEACHER', revokedAt: null },
+            select: { id: true },
+          });
+          if (!teacher) {
+            return res.status(400).json({
+              error: { message: 'That teacher was not found in your school', field: 'classTeacherId' },
+            });
+          }
+          if (teacher.id !== existing.classTeacherId) {
+            data.classTeacherId = teacher.id;
+            changes.classTeacherId = { from: existing.classTeacherId || null, to: teacher.id };
+          }
         }
       }
     }
