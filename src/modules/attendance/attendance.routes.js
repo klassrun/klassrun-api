@@ -139,8 +139,15 @@ router.post('/', authenticate, authorize('SCHOOL_ADMIN', 'TEACHER'), requireActi
     if (typeof body.studentId !== 'string' || body.studentId.trim() === '') {
       return res.status(400).json({ error: { message: 'studentId is required', field: 'studentId' } });
     }
+    // archived-student-entry-v1: the grid deliberately INCLUDES students who have since
+    // left (spec 2.2 — they were in this class THIS session, and dropping them
+    // makes the record shrink). This lookup used to filter archivedAt: null and
+    // 404 exactly those rows, so an admin closing out a term could see a "Left"
+    // student on screen and be unable to record them. schoolId scoping and the
+    // class-teacher ownership check below are unchanged — this widens nothing,
+    // it only makes a previously impossible write possible.
     const student = await prisma.student.findFirst({
-      where: { id: body.studentId, schoolId: req.user.schoolId, archivedAt: null },
+      where: { id: body.studentId, schoolId: req.user.schoolId },
       select: { id: true },
     });
     if (!student) return res.status(404).json({ error: { message: 'Student not found', field: 'studentId' } });

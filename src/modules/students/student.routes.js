@@ -132,9 +132,51 @@ router.get('/:id', authenticate, async (req, res, next) => {
 });
 
 // ── POST / (create) ──────────────────────────────────────────────────────────
-router.post('/', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('STUDENTS'), /* gate-1-students-post */ async (req, res, next) => {
+// students-teacher-write-v1: a TEACHER may write only inside a class they are the class
+// teacher of. Class.classTeacherId is the denormalised CURRENT assignment, so
+// when a student moves class their old teacher loses access and the new one
+// gains it — which is the behaviour we want. SCHOOL_ADMIN is unrestricted.
+async function assertTeacherOwnsClass(req, classId) {
+  if (req.user.role !== 'TEACHER') return { ok: true };
+  if (typeof classId !== 'string' || classId.trim() === '') {
+    return { ok: false, status: 400, message: 'classId is required', field: 'classId' };
+  }
+  const cls = await prisma.class.findFirst({
+    where: { id: classId, schoolId: req.user.schoolId },
+    select: { classTeacherId: true },
+  });
+  if (!cls || cls.classTeacherId !== req.user.id) {
+    return { ok: false, status: 403, message: 'You are not the class teacher for this class', field: 'classId' };
+  }
+  return { ok: true };
+}
+
+// students-teacher-write-v1: fields only SCHOOL_ADMIN may set. Renumbering breaks the
+// identifier report cards hang off; changing classId rewrites the
+// current-session Enrollment row (see enrollment-b1-v1 in PATCH below).
+const ADMIN_ONLY_STUDENT_FIELDS = ['admissionNumber', 'classId'];
+function rejectAdminOnlyFields(req, body, opts) {
+  if (req.user.role !== 'TEACHER') return null;
+  const allowClassId = !!(opts && opts.allowClassId);
+  for (const f of ADMIN_ONLY_STUDENT_FIELDS) {
+    if (allowClassId && f === 'classId') continue;
+    const v = (body || {})[f];
+    if (f in (body || {}) && v !== undefined && v !== null && String(v).trim() !== '') {
+      return { status: 403, message: 'Only a school admin can set ' + f, field: f };
+    }
+  }
+  return null;
+}
+
+router.post('/', authenticate, authorize('SCHOOL_ADMIN', 'TEACHER'), requireActiveForWrites, requirePlan('STUDENTS'), /* gate-1-students-post students-teacher-write-v1 */ async (req, res, next) => {
   try {
     const body = req.body || {};
+
+    // students-teacher-write-v1: a teacher cannot choose the admission number. classId IS
+    // allowed here — they have to say which class — and is then checked for
+    // ownership at the class lookup below.
+    const forbidden = rejectAdminOnlyFields(req, body, { allowClassId: true });
+    if (forbidden) return res.status(forbidden.status).json({ error: { message: forbidden.message, field: forbidden.field } });
 
     // fix3-admission-v1: admission number is OPTIONAL on create.
     // Blank/absent -> auto-generated as PREFIX/YEAR/NNN at insert time.
@@ -156,11 +198,15 @@ router.post('/', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites
     }
     const cls = await prisma.class.findFirst({
       where: { id: body.classId, schoolId: req.user.schoolId },
-      select: { id: true, archivedAt: true },
+      select: { id: true, archivedAt: true, classTeacherId: true }, // students-teacher-write-v1
     });
     if (!cls) return res.status(404).json({ error: { message: 'Class not found', field: 'classId' } });
     if (cls.archivedAt) {
       return res.status(400).json({ error: { message: 'Cannot enrol into an archived class', field: 'classId' } });
+    }
+    // students-teacher-write-v1: a TEACHER may only add into the class they are class teacher of.
+    if (req.user.role === 'TEACHER' && cls.classTeacherId !== req.user.id) {
+      return res.status(403).json({ error: { message: 'You are not the class teacher for this class', field: 'classId' } });
     }
 
     const mn = optString(body.middleName, MAX_NAME);
@@ -270,7 +316,7 @@ router.post('/', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites
 });
 
 // ── PATCH /:id ────────────────────────────────────────────────────────────────
-router.patch('/:id', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('STUDENTS'), /* gate-1-students-patch */ async (req, res, next) => {
+router.patch('/:id', authenticate, authorize('SCHOOL_ADMIN', 'TEACHER'), requireActiveForWrites, requirePlan('STUDENTS'), /* gate-1-students-patch students-teacher-write-v1 */ async (req, res, next) => {
   try {
     const { id } = req.params;
     const existing = await prisma.student.findFirst({
@@ -280,6 +326,14 @@ router.patch('/:id', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWr
 
     const body = req.body || {};
     const data = {};
+
+    // students-teacher-write-v1: a TEACHER may only edit a student who is CURRENTLY in their
+    // own class, and may not touch admissionNumber or classId. Both checks run
+    // before any field is read, so a rejected request changes nothing.
+    const owns = await assertTeacherOwnsClass(req, existing.classId);
+    if (!owns.ok) return res.status(owns.status).json({ error: { message: owns.message, field: 'studentId' } });
+    const forbidden = rejectAdminOnlyFields(req, body);
+    if (forbidden) return res.status(forbidden.status).json({ error: { message: forbidden.message, field: forbidden.field } });
 
     if ('admissionNumber' in body) {
       const c = reqString(body.admissionNumber, 'Admission number', MAX_ADMISSION);
