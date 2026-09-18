@@ -168,13 +168,14 @@ router.post('/generate', authenticate, authorize('TEACHER'), requireActiveForWri
         sessionStamp: dupStamp,
         deletedAt: null,
         topic: { equals: topic.trim(), mode: 'insensitive' },
+        ...(weekVal != null ? { week: weekVal } : {}), // notes-dedup-week-v1
       },
       select: { id: true, topic: true, week: true, createdAt: true },
     });
     if (dupNote) {
       return res.status(409).json({
         error: {
-          message: `A note for "${dupNote.topic}" already exists for this class, subject and term. Open it, or delete it and regenerate.`,
+          message: `A note for "${dupNote.topic}"${dupNote.week != null ? ` (Week ${dupNote.week})` : ''} already exists for this class, subject and term.`,
           code: 'DUPLICATE_NOTE',
         },
         existingNote: dupNote,
@@ -565,13 +566,14 @@ router.post('/generate-aligned', authenticate, authorize('TEACHER'), requireActi
         sessionStamp: dupStamp,
         deletedAt: null,
         topic: { equals: wk.topic.trim(), mode: 'insensitive' },
+        week: weekNum, // notes-dedup-week-v1
       },
       select: { id: true, topic: true, week: true, createdAt: true },
     });
     if (dupNote) {
       return res.status(409).json({
         error: {
-          message: `A note for "${dupNote.topic}" already exists for this class, subject and term. Open it, or delete it and regenerate.`,
+          message: `A note for "${dupNote.topic}"${dupNote.week != null ? ` (Week ${dupNote.week})` : ''} already exists for this class, subject and term.`,
           code: 'DUPLICATE_NOTE',
         },
         existingNote: dupNote,
@@ -721,6 +723,7 @@ router.post('/:id/duplicate', authenticate, authorize('TEACHER'), requireActiveF
         sessionStamp,
         deletedAt: null,
         topic: { equals: source.topic, mode: 'insensitive' },
+        ...(source.week != null ? { week: source.week } : {}), // notes-dedup-week-v1
       },
       select: { id: true, topic: true, week: true, createdAt: true },
     });
