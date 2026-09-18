@@ -34,6 +34,9 @@ const DURATION_MAX = 240;
 const SUB_TOPIC_MIN = 1;
 const SUB_TOPIC_MAX = 100;
 const SUB_TOPICS_MAX_COUNT = 10;
+// klassrun-periods-v1
+const PERIODS_MIN = 1;
+const PERIODS_MAX = 6;
 
 function isStringInRange(v, min, max) {
   if (typeof v !== 'string') return false;
@@ -45,7 +48,7 @@ function isStringInRange(v, min, max) {
 // TEACHER-only. Generates AI lesson note, persists, returns saved record.
 router.post('/generate', authenticate, authorize('TEACHER'), requireActiveForWrites, /* gate-1-notes-gen */ async (req, res, next) => {
   try {
-    const { classId, subjectId, topic, week, duration, additionalNotes, subTopics } = req.body || {};
+    const { classId, subjectId, topic, week, duration, additionalNotes, subTopics, periods, periodSubTopics } = req.body || {};
 
     // ── Validate input ──
     if (typeof classId !== 'string' || !classId) {
@@ -116,6 +119,44 @@ router.post('/generate', authenticate, authorize('TEACHER'), requireActiveForWri
         cleaned.push(t);
       }
       subTopicsClean = cleaned.length > 0 ? cleaned : null;
+    }
+
+    // klassrun-periods-v1: one topic taught across several periods this week.
+    // periods absent or 1 = exactly today's note (periodSubTopics ignored).
+    let periodsVal = 1;
+    let periodSubTopicsClean = null;
+    if (periods !== undefined && periods !== null && periods !== '') {
+      const n = Number(periods);
+      if (!Number.isInteger(n) || n < PERIODS_MIN || n > PERIODS_MAX) {
+        return res.status(400).json({
+          error: { message: `Periods must be a whole number from ${PERIODS_MIN} to ${PERIODS_MAX}`, field: 'periods' },
+        });
+      }
+      periodsVal = n;
+    }
+    if (periodsVal >= 2) {
+      if (subTopicsClean) {
+        return res.status(400).json({
+          error: { message: 'When a topic runs across several periods, give a sub-topic per period instead', field: 'subTopics' },
+        });
+      }
+      const raw = periodSubTopics === undefined || periodSubTopics === null ? [] : periodSubTopics;
+      if (!Array.isArray(raw) || raw.length > periodsVal) {
+        return res.status(400).json({
+          error: { message: `periodSubTopics must be a list of at most ${periodsVal} entries`, field: 'periodSubTopics' },
+        });
+      }
+      periodSubTopicsClean = [];
+      for (let i = 0; i < periodsVal; i++) {
+        const s = raw[i];
+        if (s === undefined || s === null) { periodSubTopicsClean.push(''); continue; }
+        if (typeof s !== 'string' || s.trim().length > SUB_TOPIC_MAX) {
+          return res.status(400).json({
+            error: { message: `Each period sub-topic must be text of at most ${SUB_TOPIC_MAX} characters`, field: 'periodSubTopics' },
+          });
+        }
+        periodSubTopicsClean.push(s.trim());
+      }
     }
 
     // ── Billing gate (402) ──
@@ -208,6 +249,8 @@ router.post('/generate', authenticate, authorize('TEACHER'), requireActiveForWri
         session:         { name: session.name, currentTerm: session.currentTerm },
         additionalNotes: additionalNotes,
         subTopics:       subTopicsClean,
+        periods:         periodsVal, // klassrun-periods-v1
+        periodSubTopics: periodSubTopicsClean,
       });
     } catch (err) {
       if (err.code === 'NO_API_KEY') {
@@ -306,6 +349,7 @@ router.post('/generate', authenticate, authorize('TEACHER'), requireActiveForWri
         inputTokens:  aiResult.inputTokens,
         outputTokens: aiResult.outputTokens,
         subTopics:    subTopicsClean,
+        periods:      periodsVal, // klassrun-periods-v1
       },
     });
 

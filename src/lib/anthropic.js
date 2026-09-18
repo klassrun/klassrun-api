@@ -108,6 +108,28 @@ STRICT RULES:
     whole topic before the sub-topics. It comes BEFORE "explanationSections"
     structurally. It exists whether or not sub-topics were provided.
 
+11. PERIODS [klassrun-periods-v1]
+    Apply this rule ONLY when the request contains "Periods this week: N" with
+    N of 2 or more. Otherwise do NOT output a "periods" field at all.
+    The teacher teaches this ONE topic across N class periods this week, so the
+    note must be split by period:
+    - Output "periods": an array of EXACTLY N entries, in order, each shaped
+      { "period": 1, "subTopic": "string", "content": "string", "evaluation": ["string"], "classwork": ["string"] }
+    - The request lists each period's sub-topic. Where one is given, use it
+      VERBATIM as that period's "subTopic". Where it says "(you choose)", choose
+      a sub-topic that continues the sequence logically. If the LAST period says
+      "(you choose)", make it revision and practice exercises on the week's work.
+    - "content" is teaching-grade explanation for THAT period only, at least
+      4 sentences, and must include at least one worked example with its full
+      solution wherever the subject allows it. Use notation per rule 8.
+    - "evaluation" is 2-4 questions checking that period's sub-topic.
+      "classwork" is 2-4 short exercises pupils do in class that period.
+    - "presentation" has EXACTLY N steps, one per period in order; each step's
+      "title" names that period's sub-topic and its "duration" is the period length.
+    - Do NOT output "explanationSections" or a top-level "evaluation" when
+      "periods" is present. "behaviouralObjectives" cover the whole week.
+      "assignment" is ONE assignment for the whole week.
+
 OUTPUT FORMAT:
 Respond with ONLY valid JSON matching this exact shape — no preamble, no
 markdown fences, no commentary:
@@ -152,7 +174,7 @@ function getClient() {
   return _client;
 }
 
-function buildUserMessage({ classObj, subject, topic, week, duration, session, additionalNotes, subTopics, curriculumContext }) {
+function buildUserMessage({ classObj, subject, topic, week, duration, session, additionalNotes, subTopics, periods, periodSubTopics, curriculumContext }) {
   // batch-3-phase-1-5-subtopics-builder
   const lines = [
     'Generate a lesson note with the following details:',
@@ -172,6 +194,16 @@ function buildUserMessage({ classObj, subject, topic, week, duration, session, a
   if (additionalNotes && additionalNotes.trim()) {
     lines.push('');
     lines.push(`Teacher's notes: ${additionalNotes.trim()}`);
+  }
+  // klassrun-periods-v1: one topic taught across several periods this week
+  if (Number.isInteger(periods) && periods >= 2) {
+    lines.push('');
+    lines.push(`Periods this week: ${periods} (each ${duration || 40} minutes)`);
+    lines.push('Sub-topic for each period (use given ones VERBATIM, in this order):');
+    for (let i = 0; i < periods; i++) {
+      const s = Array.isArray(periodSubTopics) && typeof periodSubTopics[i] === 'string' ? periodSubTopics[i].trim() : '';
+      lines.push(`  Period ${i + 1}: ${s || '(you choose)'}`);
+    }
   }
   // batch-3-phase-3d-curric-lesson-builder
   if (curriculumContext && curriculumContext.trim()) {
@@ -250,6 +282,30 @@ function stripFences(text) {
   // repairing here covers notes, schemes, exams, end-of-term, comments and
   // scheme-parse from one insertion point.
   return repairLatexEscapes(t.trim());
+}
+
+// klassrun-periods-v1
+// Enforce a multi-period note: exactly N periods, the teacher's sub-topics
+// verbatim, then derive explanationSections from the periods so the existing
+// validator and every existing consumer keep working. Returns null when OK,
+// otherwise a short reason.
+function applyPeriods(obj, n, teacherSubTopics) {
+  if (!obj || typeof obj !== 'object') return 'not an object';
+  if (!Array.isArray(obj.periods)) return 'no periods array';
+  if (obj.periods.length !== n) return 'expected ' + n + ' periods, got ' + obj.periods.length;
+  for (let i = 0; i < n; i++) {
+    const p = obj.periods[i];
+    if (!p || typeof p !== 'object') return 'period ' + (i + 1) + ' is not an object';
+    if (typeof p.content !== 'string' || !p.content.trim()) return 'period ' + (i + 1) + ' has no content';
+    const given = Array.isArray(teacherSubTopics) && typeof teacherSubTopics[i] === 'string' ? teacherSubTopics[i].trim() : '';
+    if (given) p.subTopic = given;
+    if (typeof p.subTopic !== 'string' || !p.subTopic.trim()) return 'period ' + (i + 1) + ' has no sub-topic';
+    p.period = i + 1;
+    p.evaluation = Array.isArray(p.evaluation) ? p.evaluation.filter((x) => typeof x === 'string') : [];
+    p.classwork  = Array.isArray(p.classwork)  ? p.classwork.filter((x) => typeof x === 'string')  : [];
+  }
+  obj.explanationSections = obj.periods.map((p) => ({ subTopic: p.subTopic, content: p.content }));
+  return null;
 }
 
 // Validate the shape minimally — the API consumer trusts these fields exist.
@@ -358,8 +414,20 @@ const NOTE_RETRY_MAX_TOKENS = (function () {
   if (Number.isInteger(n) && n >= NOTE_MAX_TOKENS && n <= 64000) return n;
   return Math.min(64000, NOTE_MAX_TOKENS * 2);
 })();
-async function callAnthropic(userMessage, temperature) {
-  return _callAnthropicWithSystem(SYSTEM_PROMPT, userMessage, Math.max(MAX_TOKENS, NOTE_MAX_TOKENS), temperature);
+// klassrun-periods-v1: a multi-period note is roughly N times longer, so it gets
+// its own output ceiling. Clamped at 21000: SDK 0.97 refuses a non-streaming
+// call whose max_tokens implies more than 10 minutes (128000 * 10/60 = 21333).
+const PERIODS_MAX_TOKENS = (function () {
+  const n = Number(process.env.AI_NOTE_PERIODS_MAX_TOKENS);
+  return Number.isInteger(n) && n >= 8192 && n <= 21000 ? n : 16000;
+})();
+const PERIODS_RETRY_MAX_TOKENS = (function () {
+  const n = Number(process.env.AI_NOTE_PERIODS_RETRY_MAX_TOKENS);
+  if (Number.isInteger(n) && n >= PERIODS_MAX_TOKENS && n <= 21000) return n;
+  return Math.min(21000, Math.max(20000, PERIODS_MAX_TOKENS));
+})();
+async function callAnthropic(userMessage, temperature, budget) {
+  return _callAnthropicWithSystem(SYSTEM_PROMPT, userMessage, Math.max(MAX_TOKENS, NOTE_MAX_TOKENS, budget || 0), temperature);
 }
 
 /**
@@ -392,12 +460,16 @@ async function callAnthropic(userMessage, temperature) {
  */
 async function generateLessonNote(params) {
   const userMessage = buildUserMessage(params);
+  // klassrun-periods-v1
+  const periodsN    = Number.isInteger(params.periods) && params.periods >= 2 ? params.periods : 1;
+  const noteBudget  = periodsN >= 2 ? PERIODS_MAX_TOKENS : 0;
+  const retryBudget = periodsN >= 2 ? PERIODS_RETRY_MAX_TOKENS : NOTE_RETRY_MAX_TOKENS;
   const generatedAt = new Date().toISOString();
 
   // First attempt at standard temperature
   let result;
   try {
-    result = await callAnthropic(userMessage, TEMPERATURE);
+    result = await callAnthropic(userMessage, TEMPERATURE, noteBudget);
   } catch (err) {
     // hotfix-batch-3-phase-1-5-cost-control
     if (err.code === 'NO_API_KEY') throw err;
@@ -431,18 +503,18 @@ async function generateLessonNote(params) {
     console.error('[generateLessonNote] truncated at max_tokens, retrying larger:', {
       outputTokens: result.outputTokens,
       textLength:   text.length,
-      retryBudget:  NOTE_RETRY_MAX_TOKENS,
+      retryBudget:  retryBudget,
     });
     let bigger;
     try {
-      bigger = await _callAnthropicWithSystem(SYSTEM_PROMPT, userMessage, NOTE_RETRY_MAX_TOKENS, 0.2);
+      bigger = await _callAnthropicWithSystem(SYSTEM_PROMPT, userMessage, retryBudget, 0.2);
     } catch (err2) {
       if (err2.code === 'NO_API_KEY') throw err2;
       throw classifyAnthropicError(err2);
     }
     text = stripFences(bigger.text);
     if (bigger.stopReason === 'max_tokens') {
-      const err = new Error('AI output truncated at max_tokens even at ' + NOTE_RETRY_MAX_TOKENS + ' (' + bigger.outputTokens + ' tokens)');
+      const err = new Error('AI output truncated at max_tokens even at ' + retryBudget + ' (' + bigger.outputTokens + ' tokens)');
       err.code = 'AI_TRUNCATED';
       throw err;
     }
@@ -455,7 +527,7 @@ async function generateLessonNote(params) {
     // Retry once at lower temperature
     let retry;
     try {
-      retry = await callAnthropic(userMessage, 0.2);
+      retry = await callAnthropic(userMessage, 0.2, noteBudget);
     } catch (err) {
       // hotfix-batch-3-phase-1-5-cost-control
       if (err.code === 'NO_API_KEY') throw err;
@@ -484,6 +556,19 @@ async function generateLessonNote(params) {
   // hotfix-batch-3-phase-1-5-cost-control
   // No retry on validation failure — same prompt, same model, same shape;
   // retrying usually fails again. Throw immediately, save the tokens.
+  // klassrun-periods-v1: enforce the period split and derive the legacy
+  // explanationSections from it; single-period notes keep today's shape.
+  if (periodsN >= 2) {
+    const why = applyPeriods(parsed, periodsN, params.periodSubTopics);
+    if (why) {
+      console.error('[generateLessonNote] AI_INVALID periods (no retry):', { why, periods: periodsN });
+      const err = new Error('AI output did not split into ' + periodsN + ' periods: ' + why);
+      err.code = 'AI_INVALID';
+      throw err;
+    }
+  } else if (parsed && typeof parsed === 'object' && 'periods' in parsed) {
+    delete parsed.periods;
+  }
   if (!isValidLessonNote(parsed)) {
     console.error('[generateLessonNote] AI_INVALID (no retry):', {
       hasTitle:                 typeof parsed?.title === 'string' && !!parsed.title.trim(),
@@ -1740,6 +1825,7 @@ module.exports = {
     buildUserMessage,
     stripFences,
     isValidLessonNote,
+    applyPeriods, // klassrun-periods-v1
     repairLatexEscapes,
   },
 };
