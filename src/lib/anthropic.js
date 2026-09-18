@@ -308,6 +308,23 @@ function applyPeriods(obj, n, teacherSubTopics) {
   return null;
 }
 
+// klassrun-periods-v2: live test showed Haiku follows the OUTPUT FORMAT shape
+// (which has no "periods") over rule 11. For periods >= 2 the user message
+// therefore ENDS with an explicit override - the last thing the model reads.
+function periodsOutputOverride(params) {
+  const n = params && Number.isInteger(params.periods) ? params.periods : 1;
+  if (n < 2) return '';
+  return '\n\n' + [
+    'OUTPUT OVERRIDE FOR THIS REQUEST - rule 11 applies and REPLACES the OUTPUT FORMAT shape:',
+    '- Your JSON MUST include a top-level "periods" array with EXACTLY ' + n + ' entries, one per period, in order.',
+    '- Each entry is {"period": <number>, "subTopic": "string", "content": "string", "evaluation": ["string"], "classwork": ["string"]}.',
+    '- Use the per-period sub-topics listed above, VERBATIM where given; if the last one says (you choose), make it revision and practice.',
+    '- "presentation" has EXACTLY ' + n + ' steps, one per period, in order.',
+    '- Do NOT include "explanationSections" or a top-level "evaluation".',
+    '- Keep every other field: title, subject, class, topic, week, duration, behaviouralObjectives, previousKnowledge, instructionalMaterials, explanationOverview, chalkboardSummary, assignment (ONE for the week), suggestedReading.',
+  ].join('\n');
+}
+
 // Validate the shape minimally — the API consumer trusts these fields exist.
 function isValidLessonNote(obj) {
   if (!obj || typeof obj !== 'object') return false;
@@ -459,7 +476,7 @@ async function callAnthropic(userMessage, temperature, budget) {
  *   - 'AI_API_ERROR'    — Anthropic API itself errored
  */
 async function generateLessonNote(params) {
-  const userMessage = buildUserMessage(params);
+  const userMessage = buildUserMessage(params) + periodsOutputOverride(params); // klassrun-periods-v2
   // klassrun-periods-v1
   const periodsN    = Number.isInteger(params.periods) && params.periods >= 2 ? params.periods : 1;
   const noteBudget  = periodsN >= 2 ? PERIODS_MAX_TOKENS : 0;
@@ -1826,6 +1843,7 @@ module.exports = {
     stripFences,
     isValidLessonNote,
     applyPeriods, // klassrun-periods-v1
+    periodsOutputOverride, // klassrun-periods-v2
     repairLatexEscapes,
   },
 };
