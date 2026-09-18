@@ -76,6 +76,7 @@ model School {
 
   // ops-5-portal-fee-block
   portalFeeBlockEnabled Boolean @default(false)
+  gradingConfig Json? // grading-config-v1: { parts: [{label,max}] }; null = CA1 20 · CA2 20 · Obj 20 · Theory 40
 
   // Relations
   users        User[]
@@ -160,6 +161,7 @@ model AcademicSession {
   reportCardComments ReportCardComment[] // ops-2-rel-session
   promotionRecords   PromotionRecord[] // ops-3-rel-session
   feeRecords         FeeRecord[] // ops-4-rel-session
+  gradingConfigByTerm Json? // grading-config-v1: { FIRST: [{label,max}], ... } frozen on a term's first saved score
   @@map("academic_sessions")
 }
 
@@ -618,6 +620,8 @@ model ResultEntry {
   ca2       Int         @default(0)
   objective Int         @default(0)
   theory    Int         @default(0)
+  score5    Int         @default(0) // grading-config-v1: 5th part of the school's breakdown
+  score6    Int         @default(0) // grading-config-v1: 6th part of the school's breakdown
   total     Int         @default(0)
   grade     String
 

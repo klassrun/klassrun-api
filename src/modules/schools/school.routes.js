@@ -1,5 +1,6 @@
 const router = require('express').Router();
 const { authenticate, authorize } = require('../../middleware/auth');
+const { requirePlan, requireActiveForWrites } = require('../../lib/plan-gate'); // grading-config-v1
 
 // GET /api/schools/me — get current school details
 router.get('/me', authenticate, async (req, res, next) => {
@@ -117,5 +118,74 @@ router.post(
     }
   }
 );
+
+// ── grading-config-v1: the school's score breakdown ──────────────────────────
+//   GET /api/schools/grading-config   any staff: the breakdown + what the current
+//                                     term is actually using (and whether it is locked)
+//   PUT /api/schools/grading-config   SCHOOL_ADMIN: { parts: [{ label, max }] }
+//                                     totalling 100, or { reset: true } for the default
+// A term that already has scores keeps the breakdown frozen onto it; a change
+// applies from the next term that has no scores yet.
+async function gradingConfigView(schoolId) {
+  const prisma = require('../../config/db');
+  const grading = require('../../lib/grading');
+  const gradingConfig = require('../../lib/grading-config');
+  const school = await prisma.school.findUnique({ where: { id: schoolId }, select: { gradingConfig: true } });
+  const saved = gradingConfig.schoolParts(school && school.gradingConfig);
+  const current = await prisma.academicSession.findFirst({
+    where: { schoolId, isCurrent: true },
+    select: { id: true, name: true, currentTerm: true },
+  });
+  let currentTerm = null;
+  if (current) {
+    const t = await gradingConfig.componentsForTerm(schoolId, current.id, current.currentTerm);
+    currentTerm = {
+      sessionId: current.id,
+      sessionName: current.name,
+      term: current.currentTerm,
+      locked: t.source !== 'school',
+      parts: t.components.map((c) => ({ label: c.label, max: c.max })),
+    };
+  }
+  return {
+    parts: grading.componentsFor(saved).map((c) => ({ label: c.label, max: c.max })),
+    isDefault: !saved,
+    maxParts: grading.MAX_PARTS,
+    currentTerm,
+  };
+}
+
+router.get('/grading-config', authenticate, async (req, res, next) => {
+  try {
+    res.json(await gradingConfigView(req.user.schoolId));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.put('/grading-config', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('RESULTS_REPORTCARDS'), async (req, res, next) => {
+  try {
+    const prisma = require('../../config/db');
+    const grading = require('../../lib/grading');
+    const body = req.body || {};
+    let parts = null; // { reset: true } stores parts: null = the default breakdown
+    if (body.reset !== true) {
+      const v = grading.validateBreakdown(body.parts);
+      if (!v.ok) return res.status(400).json({ error: { message: v.error, field: 'parts' } });
+      parts = v.parts;
+    }
+    await prisma.school.update({
+      where: { id: req.user.schoolId },
+      data: { gradingConfig: { parts, updatedAt: new Date().toISOString(), updatedById: req.user.id } },
+    });
+    const view = await gradingConfigView(req.user.schoolId);
+    const note = view.currentTerm && view.currentTerm.locked
+      ? 'Saved. The current term already has scores, so it keeps the breakdown it started with. This applies from the next term.'
+      : 'Saved. This applies to the current term.';
+    res.json({ ...view, note });
+  } catch (err) {
+    next(err);
+  }
+});
 
 module.exports = router;

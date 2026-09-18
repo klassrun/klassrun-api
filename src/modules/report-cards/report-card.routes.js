@@ -18,6 +18,7 @@ const { authenticate, authorize } = require('../../middleware/auth');
 const prisma = require('../../config/db');
 const { recordAcademicEvent } = require('../../lib/audit');
 const grading = require('../../lib/grading');
+const gradingConfig = require('../../lib/grading-config'); // grading-config-v1
 const resultsAggregate = require('../../lib/results-aggregate'); // ops-3-cumulative-fold
 const cloudinaryLib = require('../../lib/cloudinary');
 const { renderReportCardPdf, BEHAVIOUR_ATTRS } = require('../../lib/pdf/report-card-pdf');
@@ -175,6 +176,8 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), requireActiveF
       cumById[s.id] = resultsAggregate.cumulativeAverage(resultsAggregate.perTermAverages(cumEntriesByStudent[s.id] || []));
     });
 
+    // grading-config-v1: the breakdown this term uses, recorded on every card
+    const termGrading = await gradingConfig.componentsForTerm(req.user.schoolId, session.id, term);
     const classSize = students.length;
     const generatedAt = new Date();
 
@@ -198,7 +201,7 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), requireActiveF
         return {
           subjectId: e.subjectId,
           name: subjectName[e.subjectId] || 'Subject',
-          ca1: e.ca1, ca2: e.ca2, objective: e.objective, theory: e.theory,
+          ca1: e.ca1, ca2: e.ca2, objective: e.objective, theory: e.theory, score5: e.score5, score6: e.score6, // grading-config-v1
           total: e.total,
           grade,
           remark,
@@ -220,6 +223,7 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), requireActiveF
           class: cls.name,
         },
         session: session.name,
+        grading: { components: termGrading.components }, // grading-config-v1
         term,
         subjects: subjectRows,
         summary: {

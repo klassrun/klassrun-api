@@ -19,6 +19,7 @@ const { authenticate, authorize } = require('../../middleware/auth'); // audit-r
 const prisma = require('../../config/db');
 const { recordAcademicEvent } = require('../../lib/audit');
 const grading = require('../../lib/grading');
+const gradingConfig = require('../../lib/grading-config'); // grading-config-v1
 
 const TERMS = ['FIRST', 'SECOND', 'THIRD'];
 
@@ -114,18 +115,24 @@ router.get('/grid', authenticate, authorize('TEACHER', 'SCHOOL_ADMIN'), /* audit
         ca2: e ? e.ca2 : 0,
         objective: e ? e.objective : 0,
         theory: e ? e.theory : 0,
+        score5: e ? e.score5 : 0, // grading-config-v1
+        score6: e ? e.score6 : 0,
         total: e ? e.total : null,
         grade: e ? e.grade : null,
         hasEntry: !!e,
       };
     });
 
+    // grading-config-v1: the breakdown this term uses (frozen, legacy default, or the school's)
+    const termGrading = await gradingConfig.componentsForTerm(req.user.schoolId, sessRes.session.id, term);
     res.json({
       subject: { id: subjRes.subject.id, name: subjRes.subject.name, classId: subjRes.subject.classId },
       session: sessRes.session,
       term,
-      scoreMax: grading.SCORE_MAX,
-      totalMax: grading.TOTAL_MAX,
+      scoreMax: grading.scoreMaxFor(termGrading.components), // grading-config-v1
+      totalMax: 100,
+      components: termGrading.components, // grading-config-v1: [{ key, label, max }]
+      breakdownLocked: termGrading.source !== 'school',
       rows,
     });
   } catch (err) {
@@ -170,12 +177,16 @@ router.post('/', authenticate, authorize('TEACHER', 'SCHOOL_ADMIN'), requireActi
     }
 
     const comps = {};
-    for (const key of grading.COMPONENTS) {
-      const c = grading.validateComponent(key, body[key]);
+    // grading-config-v1: validate against the TERM's breakdown; the first save freezes it
+    const termComponents = await gradingConfig.freezeForWrite(req.user.schoolId, sessRes.session.id, term);
+    for (const comp of termComponents) {
+      const key = comp.key;
+      const c = grading.validateScore(comp, body[key]);
       if (!c.ok) return res.status(400).json({ error: { message: c.error, field: key } });
       comps[key] = c.value;
     }
-    const total = grading.computeTotal(comps);
+    for (const key of grading.SLOT_KEYS) { if (!(key in comps)) comps[key] = 0; } // grading-config-v1: unused slots stay 0
+    const total = grading.computeTotalFor(termComponents, comps);
     const { grade } = grading.gradeFor(total);
 
     const entry = await prisma.resultEntry.upsert({

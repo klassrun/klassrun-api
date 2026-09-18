@@ -26,6 +26,28 @@ function safe(v, fallback = DASH) {
   return v === null || v === undefined || v === '' ? fallback : String(v);
 }
 
+// grading-config-v1: score columns follow the breakdown stored in the snapshot.
+// Cards generated before grading-config-v1 (no snapshot.grading) and cards using
+// the default breakdown keep the original four columns exactly.
+const grading = require('../grading');
+const LEGACY_SCORE_COLS = [
+  { key: 'ca1', label: 'CA1', w: 0.08, align: 'center' },
+  { key: 'ca2', label: 'CA2', w: 0.08, align: 'center' },
+  { key: 'objective', label: 'Obj', w: 0.08, align: 'center' },
+  { key: 'theory', label: 'Theory', w: 0.10, align: 'center' },
+];
+function scoreCols(snapshot, contentW) {
+  const g = snapshot && snapshot.grading;
+  const comps = g && Array.isArray(g.components) ? g.components : null;
+  if (!comps || comps.length === 0 || grading.isDefaultComponents(comps)) return LEGACY_SCORE_COLS;
+  const w = 0.34 / comps.length; // the same 34% of the row the four legacy columns used
+  const fit = Math.max(3, Math.floor((w * contentW - 4) / 4.6)); // characters that fit at 8.5pt
+  return comps.map((c) => {
+    const label = String(c.label || c.key);
+    return { key: c.key, label: label.length > fit ? label.slice(0, fit) : label, w, align: 'center' };
+  });
+}
+
 // snapshot: the frozen ReportCard payload. school: { name, logoUrl }.
 async function renderReportCardPdf(snapshot, school) {
   const logoBuffer = await fetchImageBuffer(school && school.logoUrl);
@@ -64,10 +86,7 @@ async function renderReportCardPdf(snapshot, school) {
       // ── Subjects table ──
       const cols = [
         { key: 'name', label: 'Subject', w: 0.30, align: 'left' },
-        { key: 'ca1', label: 'CA1', w: 0.08, align: 'center' },
-        { key: 'ca2', label: 'CA2', w: 0.08, align: 'center' },
-        { key: 'objective', label: 'Obj', w: 0.08, align: 'center' },
-        { key: 'theory', label: 'Theory', w: 0.10, align: 'center' },
+        ...scoreCols(snapshot, contentW), // grading-config-v1
         { key: 'total', label: 'Total', w: 0.09, align: 'center' },
         { key: 'grade', label: 'Grade', w: 0.08, align: 'center' },
         { key: 'subjectPosition', label: 'Pos', w: 0.07, align: 'center' },
@@ -179,4 +198,4 @@ async function renderReportCardPdf(snapshot, school) {
   });
 }
 
-module.exports = { renderReportCardPdf, BEHAVIOUR_ATTRS };
+module.exports = { renderReportCardPdf, BEHAVIOUR_ATTRS, _scoreCols: scoreCols }; // grading-config-v1: _scoreCols for tests
