@@ -145,6 +145,7 @@ async function gradingConfigView(schoolId) {
       term: current.currentTerm,
       locked: t.source !== 'school',
       parts: t.components.map((c) => ({ label: c.label, max: c.max })),
+      needsReview: t.source === 'school' ? 0 : await gradingConfig.countMisfits(schoolId, current.id, current.currentTerm, t.components), // grading-config-apply-v1
     };
   }
   return {
@@ -174,15 +175,41 @@ router.put('/grading-config', authenticate, authorize('SCHOOL_ADMIN'), requireAc
       if (!v.ok) return res.status(400).json({ error: { message: v.error, field: 'parts' } });
       parts = v.parts;
     }
+    // grading-config-apply-v1: optionally apply to the CURRENT term even if it already has scores.
+    // Refused while any of that term's report cards are locked - locked cards are final.
+    const applyNow = body.applyToCurrentTerm === true;
+    const current = applyNow
+      ? await prisma.academicSession.findFirst({ where: { schoolId: req.user.schoolId, isCurrent: true }, select: { id: true, currentTerm: true } })
+      : null;
+    if (current) {
+      const lockedCards = await prisma.reportCard.count({
+        where: { schoolId: req.user.schoolId, sessionId: current.id, term: current.currentTerm, lockedAt: { not: null } },
+      });
+      if (lockedCards > 0) {
+        return res.status(409).json({ error: {
+          message: `${lockedCards} report card${lockedCards === 1 ? ' is' : 's are'} already locked for the current term, so its breakdown cannot change. Save without "apply to the current term" and it will be used from next term.`,
+          code: 'TERM_CARDS_LOCKED',
+        } });
+      }
+    }
     await prisma.school.update({
       where: { id: req.user.schoolId },
       data: { gradingConfig: { parts, updatedAt: new Date().toISOString(), updatedById: req.user.id } },
     });
+    let applied = null; // grading-config-apply-v1
+    if (current) {
+      const gradingConfig = require('../../lib/grading-config');
+      const effective = grading.componentsFor(parts).map((c) => ({ label: c.label, max: c.max }));
+      await gradingConfig.applyToTerm(req.user.schoolId, current.id, current.currentTerm, effective);
+      applied = { needsReview: await gradingConfig.countMisfits(req.user.schoolId, current.id, current.currentTerm, grading.componentsFor(effective)) };
+    }
     const view = await gradingConfigView(req.user.schoolId);
-    const note = view.currentTerm && view.currentTerm.locked
+    const note = applied // grading-config-apply-v1
+      ? `Applied to the current term.${applied.needsReview > 0 ? ` ${applied.needsReview} saved score${applied.needsReview === 1 ? ' is' : 's are'} outside the new breakdown - teachers will see ${applied.needsReview === 1 ? 'it' : 'them'} flagged in Results to fix.` : ' Every saved score already fits.'}`
+      : view.currentTerm && view.currentTerm.locked
       ? 'Saved. The current term already has scores, so it keeps the breakdown it started with. This applies from the next term.'
       : 'Saved. This applies to the current term.';
-    res.json({ ...view, note });
+    res.json({ ...view, note, applied }); // grading-config-apply-v1
   } catch (err) {
     next(err);
   }

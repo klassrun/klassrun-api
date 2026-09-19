@@ -63,4 +63,38 @@ async function freezeForWrite(schoolId, sessionId, term) {
   return (await componentsForTerm(schoolId, sessionId, term)).components;
 }
 
-module.exports = { componentsForTerm, freezeForWrite, schoolParts, frozenParts };
+// grading-config-apply-v1 ────────────────────────────────────────────────────
+// Why a saved ResultEntry does not fit `components`, or null when it does.
+// A score is only ever flagged here - never changed automatically.
+function misfit(entry, components) {
+  if (!entry) return null;
+  const used = new Set(components.map((c) => c.key));
+  for (const c of components) {
+    const v = Number(entry[c.key]) || 0;
+    if (v > c.max) return `${c.label} ${v} is over the new maximum of ${c.max}`;
+  }
+  for (const k of grading.SLOT_KEYS) {
+    if (!used.has(k) && (Number(entry[k]) || 0) !== 0) return 'Has marks in a part the breakdown no longer uses';
+  }
+  if ((Number(entry.total) || 0) !== grading.computeTotalFor(components, entry)) return 'The total needs re-saving under the new breakdown';
+  return null;
+}
+
+// Overwrite one term's breakdown (the admin chose "apply to the current term").
+async function applyToTerm(schoolId, sessionId, term, parts) {
+  if (!TERMS.includes(term)) throw new Error('grading-config: bad term ' + term);
+  const s = await prisma.academicSession.findFirst({ where: { id: sessionId, schoolId }, select: { gradingConfigByTerm: true } });
+  if (!s) return;
+  const map = s.gradingConfigByTerm && typeof s.gradingConfigByTerm === 'object' && !Array.isArray(s.gradingConfigByTerm)
+    ? { ...s.gradingConfigByTerm } : {};
+  map[term] = parts;
+  await prisma.academicSession.update({ where: { id: sessionId }, data: { gradingConfigByTerm: map } });
+}
+
+// How many saved scores in a term do not fit `components`.
+async function countMisfits(schoolId, sessionId, term, components) {
+  const entries = await prisma.resultEntry.findMany({ where: { schoolId, sessionId, term } });
+  return entries.filter((e) => misfit(e, components)).length;
+}
+
+module.exports = { componentsForTerm, freezeForWrite, schoolParts, frozenParts, misfit, applyToTerm, countMisfits }; // grading-config-apply-v1

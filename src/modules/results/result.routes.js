@@ -125,6 +125,13 @@ router.get('/grid', authenticate, authorize('TEACHER', 'SCHOOL_ADMIN'), /* audit
 
     // grading-config-v1: the breakdown this term uses (frozen, legacy default, or the school's)
     const termGrading = await gradingConfig.componentsForTerm(req.user.schoolId, sessRes.session.id, term);
+    // grading-config-apply-v1: flag saved scores that do not fit the term's breakdown
+    let needsReviewCount = 0;
+    rows.forEach((r) => {
+      const why = gradingConfig.misfit(byStudent[r.student.id], termGrading.components);
+      r.needsReview = !!why;
+      if (why) { r.reviewReason = why; needsReviewCount += 1; }
+    });
     res.json({
       subject: { id: subjRes.subject.id, name: subjRes.subject.name, classId: subjRes.subject.classId },
       session: sessRes.session,
@@ -133,6 +140,7 @@ router.get('/grid', authenticate, authorize('TEACHER', 'SCHOOL_ADMIN'), /* audit
       totalMax: 100,
       components: termGrading.components, // grading-config-v1: [{ key, label, max }]
       breakdownLocked: termGrading.source !== 'school',
+      needsReviewCount, // grading-config-apply-v1
       rows,
     });
   } catch (err) {

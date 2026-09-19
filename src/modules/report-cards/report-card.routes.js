@@ -178,6 +178,17 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), requireActiveF
 
     // grading-config-v1: the breakdown this term uses, recorded on every card
     const termGrading = await gradingConfig.componentsForTerm(req.user.schoolId, session.id, term);
+    // grading-config-apply-v1: no cards while any score in this class+term does not fit the breakdown
+    const misfits = entries.filter((e) => gradingConfig.misfit(e, termGrading.components));
+    if (misfits.length > 0) {
+      const nameById = {};
+      students.forEach((s) => { nameById[s.id] = `${s.lastName} ${s.firstName}`; });
+      const list = misfits.slice(0, 5).map((e) => `${nameById[e.studentId] || 'A student'} (${subjectName[e.subjectId] || 'a subject'})`).join(', ');
+      return res.status(409).json({ error: {
+        message: `${misfits.length} score${misfits.length === 1 ? ' does' : 's do'} not fit the current score breakdown: ${list}${misfits.length > 5 ? ', and more' : ''}. Fix ${misfits.length === 1 ? 'it' : 'them'} in Results, then generate again.`,
+        code: 'SCORES_NEED_REVIEW',
+      } });
+    }
     const classSize = students.length;
     const generatedAt = new Date();
 
