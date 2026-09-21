@@ -280,6 +280,7 @@ const resetTeacherPassword = async (req, res, next) => {
 
     return res.json({
       message: 'Password reset link sent to teacher',
+      inviteLink: inviteUrl, // invite-link-v1: copy / WhatsApp from the Teachers page
       expiresAt: newInviteExpiresAt.toISOString(),
     });
   } catch (err) {
