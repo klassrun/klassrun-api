@@ -188,4 +188,110 @@ router.post('/', authenticate, authorize('SCHOOL_ADMIN', 'TEACHER'), requireActi
   }
 });
 
+// ── POST /bulk ───────────────────────────────────────────────────────────────
+// behaviour-bulk-v1: a whole class's ratings at once (the teacher's filled-in
+// Excel template, parsed in the browser). preview writes nothing; save writes
+// ONLY valid, changed rows in one transaction. A row whose ratings are all
+// blank is skipped, so an upload can never wipe a student's ratings.
+const BEH_BULK_MAX_ROWS = 500;
+const behBlank = (v) => v === undefined || v === null || String(v).trim() === '';
+function sameRatings(a, b) {
+  const x = a && typeof a === 'object' ? a : {};
+  const y = b && typeof b === 'object' ? b : {};
+  const kx = Object.keys(x).filter((k) => !behBlank(x[k]));
+  const ky = Object.keys(y).filter((k) => !behBlank(y[k]));
+  if (kx.length !== ky.length) return false;
+  return kx.every((k) => Number(x[k]) === Number(y[k]));
+}
+
+router.post('/bulk', authenticate, authorize('SCHOOL_ADMIN', 'TEACHER'), requireActiveForWrites, requirePlan('BEHAVIOUR'), /* behaviour-bulk-v1 */ async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const mode = body.mode === 'save' ? 'save' : body.mode === 'preview' ? 'preview' : null;
+    if (!mode) return res.status(400).json({ error: { message: "mode must be 'preview' or 'save'", field: 'mode' } });
+    const term = normTerm(body.term);
+    if (!term) return res.status(400).json({ error: { message: 'term must be FIRST, SECOND or THIRD', field: 'term' } });
+    const clsRes = await resolveClass(req, body.classId); // enforces class-teacher ownership
+    if (!clsRes.ok) return res.status(clsRes.status).json({ error: { message: clsRes.message, field: clsRes.field } });
+    const sessRes = await resolveSession(req, body.sessionId);
+    if (!sessRes.ok) return res.status(sessRes.status).json({ error: { message: sessRes.message, field: sessRes.field } });
+    if (!Array.isArray(body.rows) || body.rows.length === 0) {
+      return res.status(400).json({ error: { message: 'The file has no student rows', field: 'rows' } });
+    }
+    if (body.rows.length > BEH_BULK_MAX_ROWS) {
+      return res.status(400).json({ error: { message: `Upload at most ${BEH_BULK_MAX_ROWS} rows at a time`, field: 'rows' } });
+    }
+
+    // Same roster as GET /grid: Enrollment for (session, class), leavers included.
+    const enrolled = await prisma.enrollment.findMany({
+      where: { schoolId: req.user.schoolId, sessionId: sessRes.session.id, classId: clsRes.cls.id },
+      select: { studentId: true },
+    });
+    const ids = enrolled.map((e) => e.studentId);
+    const students = ids.length === 0 ? [] : await prisma.student.findMany({
+      where: { schoolId: req.user.schoolId, id: { in: ids } },
+      select: { id: true, admissionNumber: true, firstName: true, lastName: true },
+    });
+    const byAdmission = new Map(students.map((s) => [String(s.admissionNumber).trim().toUpperCase(), s]));
+    const existing = ids.length === 0 ? [] : await prisma.behaviourRecord.findMany({
+      where: { schoolId: req.user.schoolId, sessionId: sessRes.session.id, term, studentId: { in: ids } },
+    });
+    const existingByStudent = {};
+    existing.forEach((r) => { existingByStudent[r.studentId] = r; });
+
+    const results = [];
+    const writes = [];
+    const seen = new Set();
+    body.rows.forEach((raw, i) => {
+      const rowNo = raw && Number.isInteger(raw.row) ? raw.row : i + 2;
+      const admissionNumber = raw && !behBlank(raw.admissionNumber) ? String(raw.admissionNumber).trim() : '';
+      const out = { row: rowNo, admissionNumber };
+      if (!admissionNumber) { results.push({ ...out, status: 'error', message: 'Admission number is missing' }); return; }
+      const student = byAdmission.get(admissionNumber.toUpperCase());
+      if (!student) { results.push({ ...out, status: 'error', message: 'No student with this admission number in this class for this session' }); return; }
+      out.name = `${student.lastName} ${student.firstName}`;
+      if (seen.has(student.id)) { results.push({ ...out, status: 'error', message: 'This student appears more than once in the file' }); return; }
+      seen.add(student.id);
+      const given = raw.ratings && typeof raw.ratings === 'object' && !Array.isArray(raw.ratings) ? raw.ratings : {};
+      const cleaned = {};
+      Object.keys(given).forEach((k) => { if (!behBlank(given[k])) cleaned[k] = typeof given[k] === 'string' ? given[k].trim() : given[k]; });
+      if (Object.keys(cleaned).length === 0) { results.push({ ...out, status: 'skipped', message: 'No ratings in this row' }); return; }
+      const rv = validateRatings(cleaned);
+      if (!rv.ok) { results.push({ ...out, status: 'error', message: rv.error }); return; }
+      const prev = existingByStudent[student.id];
+      if (prev && sameRatings(prev.ratings, rv.value)) { results.push({ ...out, status: 'unchanged' }); return; }
+      results.push({ ...out, status: 'ok', isNew: !prev });
+      writes.push({ studentId: student.id, ratings: rv.value });
+    });
+
+    let saved = 0;
+    if (mode === 'save' && writes.length > 0) {
+      await prisma.$transaction(writes.map((w) => prisma.behaviourRecord.upsert({
+        where: { studentId_sessionId_term: { studentId: w.studentId, sessionId: sessRes.session.id, term } },
+        create: {
+          schoolId: req.user.schoolId, studentId: w.studentId, sessionId: sessRes.session.id, term,
+          ratings: w.ratings, enteredById: req.user.id,
+        },
+        update: { ratings: w.ratings, enteredById: req.user.id },
+      })));
+      saved = writes.length;
+      recordAcademicEvent('BEHAVIOUR_RECORDED', {
+        schoolId: req.user.schoolId, actorId: req.user.id,
+        metadata: { bulk: true, classId: clsRes.cls.id, sessionId: sessRes.session.id, term, saved },
+      });
+    }
+
+    const count = (s) => results.filter((r) => r.status === s).length;
+    res.json({
+      mode,
+      term,
+      attributes: BEHAVIOUR_ATTRS,
+      summary: { rows: results.length, ok: count('ok'), unchanged: count('unchanged'), skipped: count('skipped'), errors: count('error'), saved },
+      rows: results,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;
