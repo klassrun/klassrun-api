@@ -809,4 +809,104 @@ router.post(
   }
 );
 
+// ── GET /:id/record ────────────────────────────────────────────────────────────
+// student-record-v1: one student's whole history, including after they leave.
+// Read-only; everything is keyed by studentId, so nothing a promotion or an
+// archive does can hide it. Two segments, so GET /:id can never capture it.
+const REC_TERM_ORDER = { FIRST: 1, SECOND: 2, THIRD: 3 };
+router.get('/:id/record', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
+  try {
+    const schoolId = req.user.schoolId;
+    const student = await prisma.student.findFirst({
+      where: { id: req.params.id, schoolId },
+      include: { class: { select: { id: true, name: true } } },
+    });
+    if (!student) return res.status(404).json({ error: { message: 'Student not found' } });
+    const studentId = student.id;
+
+    const [enrollments, promotions, results, attendance, behaviour, cards] = await Promise.all([
+      prisma.enrollment.findMany({ where: { schoolId, studentId } }),
+      prisma.promotionRecord.findMany({
+        where: { schoolId, studentId, reversedAt: null },
+        orderBy: { createdAt: 'asc' },
+        select: { decision: true, sessionId: true, fromClassId: true, toClassId: true, cumulative: true, createdAt: true },
+      }),
+      prisma.resultEntry.findMany({ where: { schoolId, studentId }, select: { sessionId: true, term: true, total: true } }),
+      prisma.attendanceRecord.findMany({ where: { schoolId, studentId }, select: { sessionId: true, term: true, schoolOpened: true, present: true, absent: true } }),
+      prisma.behaviourRecord.findMany({ where: { schoolId, studentId }, select: { sessionId: true, term: true } }),
+      prisma.reportCard.findMany({ where: { schoolId, studentId }, select: { id: true, sessionId: true, term: true, lockedAt: true, pdfUrl: true, snapshot: true } }),
+    ]);
+
+    const sessionIds = new Set();
+    [enrollments, results, attendance, behaviour, cards].forEach((list) => list.forEach((x) => sessionIds.add(x.sessionId)));
+    const classIds = new Set(enrollments.map((e) => e.classId));
+    promotions.forEach((p) => { classIds.add(p.fromClassId); if (p.toClassId) classIds.add(p.toClassId); });
+    const [sessions, classes] = await Promise.all([
+      sessionIds.size ? prisma.academicSession.findMany({ where: { schoolId, id: { in: [...sessionIds] } }, select: { id: true, name: true, isCurrent: true } }) : [],
+      classIds.size ? prisma.class.findMany({ where: { schoolId, id: { in: [...classIds] } }, select: { id: true, name: true } }) : [],
+    ]);
+    const sessionById = new Map(sessions.map((s) => [s.id, s]));
+    const className = (id) => (classes.find((c) => c.id === id) || {}).name || null;
+    const bySessionName = (a, b) => String((sessionById.get(a) || {}).name || '').localeCompare(String((sessionById.get(b) || {}).name || ''));
+
+    const timeline = enrollments
+      .slice()
+      .sort((a, b) => bySessionName(a.sessionId, b.sessionId))
+      .map((e) => {
+        const p = promotions.filter((x) => x.sessionId === e.sessionId).pop() || null;
+        return {
+          sessionId: e.sessionId,
+          sessionName: (sessionById.get(e.sessionId) || {}).name || null,
+          isCurrentSession: !!(sessionById.get(e.sessionId) || {}).isCurrent,
+          classId: e.classId,
+          className: className(e.classId),
+          outcome: p ? (p.decision === 'PROMOTED' ? { decision: 'PROMOTED', toClassName: className(p.toClassId), cumulative: p.cumulative }
+            : { decision: 'RETAINED', cumulative: p.cumulative }) : null,
+        };
+      });
+
+    const termKey = (x) => `${x.sessionId}::${x.term}`;
+    const terms = new Map();
+    const bucket = (x) => {
+      const k = termKey(x);
+      if (!terms.has(k)) terms.set(k, { sessionId: x.sessionId, sessionName: (sessionById.get(x.sessionId) || {}).name || null, term: x.term, totals: [], attendance: null, behaviourRated: false, reportCard: null });
+      return terms.get(k);
+    };
+    results.forEach((r) => bucket(r).totals.push(Number(r.total) || 0));
+    attendance.forEach((a) => { bucket(a).attendance = { schoolOpened: a.schoolOpened, present: a.present, absent: a.absent }; });
+    behaviour.forEach((b) => { bucket(b).behaviourRated = true; });
+    cards.forEach((c) => {
+      const s = c.snapshot && typeof c.snapshot === 'object' ? c.snapshot.summary || {} : {};
+      bucket(c).reportCard = {
+        id: c.id, locked: !!c.lockedAt, pdfUrl: c.pdfUrl || null,
+        overallPosition: s.overallPosition ?? null, classSize: s.classSize ?? null, className: (c.snapshot && c.snapshot.student && c.snapshot.student.class) || null,
+      };
+    });
+    const termRows = [...terms.values()]
+      .map((t) => ({
+        sessionId: t.sessionId, sessionName: t.sessionName, term: t.term,
+        subjectsScored: t.totals.length,
+        average: t.totals.length ? Math.round((t.totals.reduce((a, b) => a + b, 0) / t.totals.length) * 100) / 100 : null,
+        attendance: t.attendance, behaviourRated: t.behaviourRated, reportCard: t.reportCard,
+      }))
+      .sort((a, b) => bySessionName(a.sessionId, b.sessionId) || (REC_TERM_ORDER[a.term] || 0) - (REC_TERM_ORDER[b.term] || 0));
+
+    res.json({
+      student: {
+        id: student.id, admissionNumber: student.admissionNumber,
+        firstName: student.firstName, middleName: student.middleName, lastName: student.lastName,
+        gender: student.gender, dateOfBirth: student.dateOfBirth, photoUrl: student.photoUrl,
+        guardianName: student.guardianName, guardianPhone: student.guardianPhone, guardianEmail: student.guardianEmail,
+        currentClass: student.class ? { id: student.class.id, name: student.class.name } : null,
+        status: student.archivedAt ? 'LEFT' : 'ACTIVE', archivedAt: student.archivedAt,
+        createdAt: student.createdAt,
+      },
+      timeline,
+      terms: termRows,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;
