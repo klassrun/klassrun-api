@@ -531,7 +531,20 @@ const acceptInvite = async (req, res, next) => {
         metadata: { reason: 'unknown_token' },
       });
       return res.status(404).json({
-        error: { message: 'Invalid or expired invite' },
+        error: { // invite-accept-v1
+          message: 'This invite link is not valid. It may have been replaced by a newer link. Ask your school admin to send you the latest one.',
+          code: 'INVITE_NOT_FOUND',
+        },
+      });
+    }
+    // invite-accept-v1: a revoked staff member cannot (re)activate through an old link
+    if (user.revokedAt) {
+      await recordAuthEvent('INVITE_FAILED', {
+        req, email: user.email, userId: user.id,
+        metadata: { reason: 'revoked' },
+      });
+      return res.status(403).json({
+        error: { message: 'Your access to this school has been removed. Please contact your school admin.', code: 'INVITE_REVOKED' },
       });
     }
     if (user.inviteAccepted) {
@@ -540,7 +553,10 @@ const acceptInvite = async (req, res, next) => {
         metadata: { reason: 'already_accepted' },
       });
       return res.status(400).json({
-        error: { message: 'Invite already accepted' },
+        error: { // invite-accept-v1
+          message: 'This invite has already been used. Log in with your email and the password you set.',
+          code: 'INVITE_ALREADY_ACCEPTED',
+        },
       });
     }
     if (user.inviteExpiresAt && user.inviteExpiresAt < new Date()) {
@@ -559,8 +575,10 @@ const acceptInvite = async (req, res, next) => {
       data: {
         password: hashedPassword,
         inviteAccepted: true,
-        inviteToken: null,
-        inviteExpiresAt: null,
+        // invite-accept-v1: the token is KEPT (and expired below) so a second click
+        // on the same link finds this user and says "already used", instead of
+        // falling through to "invalid". Resend / reset-password overwrite it.
+        inviteExpiresAt: new Date(),
       },
     });
     invalidateUserCache(user.id); // audit-auth-invite-accepted-v1: the cache may hold the pre-accept row
