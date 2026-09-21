@@ -327,6 +327,28 @@ router.post('/execute', authenticate, authorize('SCHOOL_ADMIN'), requireActiveFo
             },
           });
         }
+        // promotions-enrollment-v1: a RETAINED student repeats the SAME class in the new
+        // session. Without this row they had no enrollment there and vanished from
+        // every new-session roster (attendance, behaviour, report cards, promotion).
+        // If a new-session row already exists (e.g. the admin placed them by hand)
+        // its class is left alone - it only becomes current.
+        if (!isPromote) {
+          await tx.enrollment.updateMany({
+            where: { studentId: d.studentId, sessionId: sessRes.session.id },
+            data: { isCurrent: false },
+          });
+          await tx.enrollment.upsert({
+            where: { studentId_sessionId: { studentId: d.studentId, sessionId: targetSession.id } },
+            update: { isCurrent: true },
+            create: {
+              schoolId: req.user.schoolId,
+              studentId: d.studentId,
+              sessionId: targetSession.id,
+              classId: srcRes.cls.id,
+              isCurrent: true,
+            },
+          });
+        }
         const rec = await tx.promotionRecord.create({
           data: {
             decision: isPromote ? 'PROMOTED' : 'RETAINED',
@@ -467,6 +489,30 @@ router.post('/:id/reverse', authenticate, authorize('SCHOOL_ADMIN'), requireActi
           restoredClassId = rec.fromClassId;
         }
       }
+      // promotions-enrollment-v1: undo a RETAIN's new-session row - only when it is a
+      // later session, the student still sits in the class the retain gave them,
+      // and nothing has been recorded for them there yet. Otherwise the row stays:
+      // pulling a child with real work off a roster would hide that work.
+      if (rec.decision === 'RETAINED' && rec.targetSessionId && rec.targetSessionId !== rec.sessionId) {
+        const tgtEnr = await tx.enrollment.findFirst({
+          where: { studentId: rec.studentId, sessionId: rec.targetSessionId },
+          select: { id: true, classId: true },
+        });
+        if (tgtEnr && tgtEnr.classId === rec.fromClassId) {
+          const [scores, att, beh] = await Promise.all([
+            tx.resultEntry.count({ where: { studentId: rec.studentId, sessionId: rec.targetSessionId } }),
+            tx.attendanceRecord.count({ where: { studentId: rec.studentId, sessionId: rec.targetSessionId } }),
+            tx.behaviourRecord.count({ where: { studentId: rec.studentId, sessionId: rec.targetSessionId } }),
+          ]);
+          if (scores + att + beh === 0) {
+            await tx.enrollment.delete({ where: { id: tgtEnr.id } });
+            await tx.enrollment.updateMany({
+              where: { studentId: rec.studentId, sessionId: rec.sessionId },
+              data: { isCurrent: true },
+            });
+          }
+        }
+      }
       await tx.promotionRecord.update({
         where: { id: rec.id },
         data: { reversedAt: new Date(), reversedById: req.user.id },
@@ -480,6 +526,82 @@ router.post('/:id/reverse', authenticate, authorize('SCHOOL_ADMIN'), requireActi
     });
 
     res.json({ promotion: { id: rec.id, reversedAt: new Date(), studentId: rec.studentId, restoredClassId } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── promotions-enrollment-v1: the safety net ────────────────────────────────────
+// A student with no enrollment in the current session is invisible to every
+// roster there. That happens for a class nobody ran promotion for, and for
+// students created before enrollments existed. These two routes find them and
+// put them back in the class they are recorded in now (Student.classId).
+//   GET  /api/promotions/unplaced
+//   POST /api/promotions/carry-over   { studentIds: [...] }
+async function currentSessionFor(req) {
+  return prisma.academicSession.findFirst({
+    where: { schoolId: req.user.schoolId, isCurrent: true },
+    select: { id: true, name: true, currentTerm: true },
+  });
+}
+async function unplacedStudents(schoolId, sessionId) {
+  const [students, enrolled] = await Promise.all([
+    prisma.student.findMany({
+      where: { schoolId, archivedAt: null },
+      orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
+      select: { id: true, admissionNumber: true, firstName: true, middleName: true, lastName: true, classId: true, class: { select: { name: true, archivedAt: true } } },
+    }),
+    prisma.enrollment.findMany({ where: { schoolId, sessionId }, select: { studentId: true } }),
+  ]);
+  const placed = new Set(enrolled.map((e) => e.studentId));
+  return students.filter((s) => !placed.has(s.id));
+}
+
+router.get('/unplaced', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, next) => {
+  try {
+    const session = await currentSessionFor(req);
+    if (!session) return res.json({ session: null, students: [] });
+    const list = await unplacedStudents(req.user.schoolId, session.id);
+    res.json({
+      session,
+      students: list.map((s) => ({
+        id: s.id, admissionNumber: s.admissionNumber, firstName: s.firstName, middleName: s.middleName, lastName: s.lastName,
+        classId: s.classId, className: s.class ? s.class.name : null, classArchived: !!(s.class && s.class.archivedAt),
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/carry-over', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('PROMOTION'), /* promotions-enrollment-v1 */ async (req, res, next) => {
+  try {
+    const ids = Array.isArray(req.body && req.body.studentIds) ? req.body.studentIds.filter((x) => typeof x === 'string') : [];
+    if (ids.length === 0) return res.status(400).json({ error: { message: 'Choose at least one student', field: 'studentIds' } });
+    if (ids.length > 1000) return res.status(400).json({ error: { message: 'At most 1000 students at a time', field: 'studentIds' } });
+    const session = await currentSessionFor(req);
+    if (!session) return res.status(400).json({ error: { message: 'Set a current academic session first.' } });
+    const wanted = new Set(ids);
+    const candidates = (await unplacedStudents(req.user.schoolId, session.id)).filter((s) => wanted.has(s.id));
+    const placeable = candidates.filter((s) => s.class && !s.class.archivedAt);
+    const skipped = candidates.filter((s) => !s.class || s.class.archivedAt).map((s) => ({ id: s.id, reason: 'Their class is archived — move them to an active class first' }));
+    if (placeable.length > 0) {
+      await prisma.$transaction(async (tx) => {
+        for (const s of placeable) {
+          await tx.enrollment.updateMany({ where: { studentId: s.id, isCurrent: true }, data: { isCurrent: false } });
+          await tx.enrollment.upsert({
+            where: { studentId_sessionId: { studentId: s.id, sessionId: session.id } },
+            update: { isCurrent: true },
+            create: { schoolId: req.user.schoolId, studentId: s.id, sessionId: session.id, classId: s.classId, isCurrent: true },
+          });
+        }
+      });
+      recordAcademicEvent('PROMOTION_EXECUTED', {
+        schoolId: req.user.schoolId, actorId: req.user.id,
+        metadata: { carryOver: true, sessionId: session.id, placed: placeable.length },
+      });
+    }
+    res.json({ placed: placeable.length, skipped, alreadyPlaced: ids.length - candidates.length });
   } catch (err) {
     next(err);
   }
