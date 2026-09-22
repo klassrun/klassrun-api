@@ -13,12 +13,13 @@ const crypto = require('crypto');
 const PAYSTACK_BASE = 'https://api.paystack.co';
 const VALID_PLANS = ['starter', 'standard', 'premium'];
 
-// Prices in kobo. Env-overridable; fallbacks = ₦40k / ₦60k / ₦150k.
+// Prices in kobo. Env-overridable; fallbacks = ₦20k / ₦35k / ₦55k (price-fallback-v1:
+// were the dead per-term ₦40k/₦60k/₦150k — a lost env would have overcharged).
 function planPrices() {
   return {
-    starter:  Number(process.env.PRICE_STARTER)  || 4000000,
-    standard: Number(process.env.PRICE_STANDARD) || 6000000,
-    premium:  Number(process.env.PRICE_PREMIUM)  || 15000000,
+    starter:  Number(process.env.PRICE_STARTER)  || 2000000,
+    standard: Number(process.env.PRICE_STANDARD) || 3500000,
+    premium:  Number(process.env.PRICE_PREMIUM)  || 5500000,
   };
 }
 function priceForPlan(plan) {
