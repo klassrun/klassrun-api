@@ -118,4 +118,37 @@ router.get('/plans', authenticate, authorize('SCHOOL_ADMIN'), async (req, res, n
   } catch (err) { next(err); }
 });
 
+// ── GET /entitlements ─────────────────────────────────────────────────────────
+// entitlements-v1: what THIS school can do right now, answered by the plan gate's
+// own functions so the app can never drift from what the API blocks. Open to
+// every signed-in role: teachers need it to explain a read-only school too.
+// Mirrors requirePlan exactly: no subscription row = nothing plan-blocked, and
+// the first enforcement pass only blocks the Starter boundary.
+const planGate = require('../../lib/plan-gate');
+router.get('/entitlements', authenticate, async (req, res, next) => {
+  try {
+    const g = planGate._internal;
+    const enforced = process.env.GATING_MODE === 'enforce';
+    const schoolId = req.user && req.user.schoolId;
+    const sub = schoolId ? await prisma.subscription.findUnique({ where: { schoolId } }) : null;
+    const rank = sub ? g.effectiveRank(sub) : 0;
+    const tier = Object.keys(g.TIER_RANK).find((k) => g.TIER_RANK[k] === rank) || 'starter';
+    const inTrial = !!sub && g.trialActive(sub);
+    const readOnly = schoolId ? !(sub && g.canWrite(sub)) : false;
+    const readOnlyReason = !readOnly ? null : !sub ? 'NO_SUBSCRIPTION' : sub.status === 'TRIAL' ? 'TRIAL_ENDED' : 'EXPIRED';
+    const features = {};
+    const featureTiers = {};
+    Object.keys(planGate.PLAN_FEATURES).forEach((f) => {
+      const min = planGate.PLAN_FEATURES[f].minTier;
+      featureTiers[f] = min;
+      features[f] = !sub ? true : !(rank === 0 && g.TIER_RANK[min] > 0);
+    });
+    res.json({
+      enforced, role: req.user.role, tier, inTrial,
+      trialEndsAt: sub && sub.trialEndsAt ? sub.trialEndsAt : null,
+      readOnly, readOnlyReason, features, featureTiers,
+    });
+  } catch (err) { next(err); }
+});
+
 module.exports = router;
