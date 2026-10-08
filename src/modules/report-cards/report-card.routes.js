@@ -20,6 +20,7 @@ const { recordAcademicEvent } = require('../../lib/audit');
 const grading = require('../../lib/grading');
 const gradingConfig = require('../../lib/grading-config'); // grading-config-v1
 const resultsAggregate = require('../../lib/results-aggregate'); // ops-3-cumulative-fold
+const nextTerm = require('../../lib/next-term'); // rc-next-term-v1
 const cloudinaryLib = require('../../lib/cloudinary');
 const { renderReportCardPdf, BEHAVIOUR_ATTRS } = require('../../lib/pdf/report-card-pdf');
 const { drawReportCardPage, loadLogo } = require('../../lib/pdf/report-card-pdf'); // rc-class-pdf-v1
@@ -96,7 +97,7 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), requireActiveF
     }
     const session = await prisma.academicSession.findFirst({
       where: { id: body.sessionId, schoolId: req.user.schoolId },
-      select: { id: true, name: true },
+      select: { id: true, name: true, nextTermBeginsByTerm: true }, // rc-next-term-v1
     });
     if (!session) return res.status(404).json({ error: { message: 'Session not found', field: 'sessionId' } });
 
@@ -250,7 +251,7 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), requireActiveF
         attendance: attendanceFromRecord(attById[s.id]), // ops-2-generate-fold
         behaviour: behaviourFromRecord(behById[s.id]),    // ops-2-generate-fold
         comments: commentsFromRecord(comById[s.id]),      // ops-2-generate-fold
-        resumptionDate: null,
+        resumptionDate: nextTerm.labelFor(session.nextTermBeginsByTerm, term), // rc-next-term-v1
       };
 
       // ops-2-generate-fold: never overwrite a finalized (locked) card

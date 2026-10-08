@@ -251,4 +251,34 @@ router.post('/:id/advance-term', authenticate, authorize('SCHOOL_ADMIN'), async 
   }
 });
 
+// ── PUT /api/sessions/:id/next-term-begins ──────────────────────────────
+// rc-next-term-v1: set — or clear, with date: null — the "Next term begins" date
+// printed on every card of one term of this session. Admin only; school from the token.
+// The read and the write share a transaction so two saves can't drop each other's term.
+const nextTerm = require('../../lib/next-term'); // rc-next-term-v1
+router.put('/:id/next-term-begins', authenticate, authorize('SCHOOL_ADMIN'), /* rc-next-term-v1 */ async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const body = req.body || {};
+    const term = String(body.term || '').toUpperCase();
+    if (!nextTerm.TERMS.includes(term)) return res.status(400).json({ error: { message: 'term must be FIRST, SECOND or THIRD', field: 'term' } });
+    const raw = body.date === null || body.date === undefined ? '' : String(body.date).trim();
+    if (raw !== '' && !nextTerm.parseDate(raw)) return res.status(400).json({ error: { message: 'That is not a valid date', field: 'date' } });
+    const session = await prisma.$transaction(async (tx) => {
+      const s = await tx.academicSession.findFirst({
+        where: { id, schoolId: req.user.schoolId },
+        select: { id: true, nextTermBeginsByTerm: true },
+      });
+      if (!s) return null;
+      const map = nextTerm.readMap(s.nextTermBeginsByTerm);
+      if (raw) map[term] = raw; else delete map[term];
+      return tx.academicSession.update({ where: { id: s.id }, data: { nextTermBeginsByTerm: map } });
+    });
+    if (!session) return res.status(404).json({ error: { message: 'Session not found' } });
+    res.json({ session, nextTermBegins: { term, date: raw || null, label: raw ? nextTerm.formatLong(raw) : null } });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

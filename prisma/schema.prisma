@@ -162,6 +162,7 @@ model AcademicSession {
   promotionRecords   PromotionRecord[] // ops-3-rel-session
   feeRecords         FeeRecord[] // ops-4-rel-session
   gradingConfigByTerm Json? // grading-config-v1: { FIRST: [{label,max}], ... } frozen on a term's first saved score
+  nextTermBeginsByTerm Json? // rc-next-term-v1: { FIRST: "2027-01-12" } = "Next term begins" printed on that term's cards
   @@map("academic_sessions")
 }
 
