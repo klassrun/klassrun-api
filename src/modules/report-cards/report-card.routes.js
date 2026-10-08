@@ -22,6 +22,8 @@ const gradingConfig = require('../../lib/grading-config'); // grading-config-v1
 const resultsAggregate = require('../../lib/results-aggregate'); // ops-3-cumulative-fold
 const cloudinaryLib = require('../../lib/cloudinary');
 const { renderReportCardPdf, BEHAVIOUR_ATTRS } = require('../../lib/pdf/report-card-pdf');
+const { drawReportCardPage, loadLogo } = require('../../lib/pdf/report-card-pdf'); // rc-class-pdf-v1
+const PDFDocument = require('pdfkit'); // rc-class-pdf-v1
 
 const TERMS = ['FIRST', 'SECOND', 'THIRD'];
 function normTerm(value) {
@@ -368,6 +370,88 @@ router.get('/', authenticate, authorize('SCHOOL_ADMIN'), /* audit-reportcard-rea
         createdAt: c.createdAt,
       })),
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── GET /class-pdf ──────────────────────────────────────────────────────────
+// rc-class-pdf-v1: every report card for one class + session + term in ONE PDF,
+// one A4 page per student, alphabetical — open it and send it to the printer.
+// Rendered on demand from the saved snapshots; nothing is uploaded or stored.
+// A read, so a school in read-only mode can still print what it already has.
+// MUST stay above GET /:id, or Express reads "class-pdf" as a report-card id.
+const RC_TERM_WORD = { FIRST: 'First', SECOND: 'Second', THIRD: 'Third' }; // rc-class-pdf-v1
+router.get('/class-pdf', authenticate, authorize('SCHOOL_ADMIN'), /* rc-class-pdf-v1 */ async (req, res, next) => {
+  try {
+    const term = normTerm(req.query.term);
+    if (!term) return res.status(400).json({ error: { message: 'term must be FIRST, SECOND or THIRD', field: 'term' } });
+    const classId = typeof req.query.classId === 'string' ? req.query.classId.trim() : '';
+    if (!classId) return res.status(400).json({ error: { message: 'classId is required', field: 'classId' } });
+    const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId.trim() : '';
+    if (!sessionId) return res.status(400).json({ error: { message: 'sessionId is required', field: 'sessionId' } });
+
+    const [cls, session, school] = await Promise.all([
+      prisma.class.findFirst({ where: { id: classId, schoolId: req.user.schoolId }, select: { id: true, name: true } }),
+      prisma.academicSession.findFirst({ where: { id: sessionId, schoolId: req.user.schoolId }, select: { id: true, name: true } }),
+      prisma.school.findFirst({ where: { id: req.user.schoolId }, select: { name: true, logoUrl: true } }),
+    ]);
+    if (!cls) return res.status(404).json({ error: { message: 'Class not found', field: 'classId' } });
+    if (!session) return res.status(404).json({ error: { message: 'Session not found', field: 'sessionId' } });
+
+    // Same cohort as /generate: who was in THIS class THIS session (Enrollment).
+    const enrolled = await prisma.enrollment.findMany({
+      where: { schoolId: req.user.schoolId, sessionId: session.id, classId: cls.id },
+      select: { studentId: true },
+    });
+    const ids = enrolled.map((e) => e.studentId);
+    const cards = ids.length === 0 ? [] : await prisma.reportCard.findMany({
+      where: { schoolId: req.user.schoolId, sessionId: session.id, term, studentId: { in: ids } },
+      select: { id: true, snapshot: true, student: { select: { lastName: true, firstName: true } } },
+    });
+    if (cards.length === 0) {
+      return res.status(404).json({ error: {
+        message: `No report cards for ${cls.name}, ${RC_TERM_WORD[term]} Term ${session.name} yet. Generate them first.`,
+        code: 'NO_REPORT_CARDS',
+      } });
+    }
+    const nm = (c, k) => String((c.student && c.student[k]) || '');
+    cards.sort((a, b) => nm(a, 'lastName').localeCompare(nm(b, 'lastName')) || nm(a, 'firstName').localeCompare(nm(b, 'firstName')));
+
+    const logoBuffer = await loadLogo(school && school.logoUrl);
+    const buffer = await new Promise((resolve, reject) => {
+      // Same page setup as a single card: no bottom margin, the layout owns the bottom edge.
+      const doc = new PDFDocument({ size: 'A4', margins: { top: 34, left: 34, right: 34, bottom: 0 }, autoFirstPage: false });
+      const chunks = [];
+      let pages = 0;
+      doc.on('pageAdded', () => { pages += 1; });
+      doc.on('data', (c) => chunks.push(c));
+      doc.on('end', () => {
+        if (pages !== cards.length) console.error(`[report-cards] rc-class-pdf-v1: ${cards.length} cards made ${pages} pages`);
+        resolve(Buffer.concat(chunks));
+      });
+      doc.on('error', reject);
+      try {
+        let logo = null;
+        if (logoBuffer) { try { logo = doc.openImage(logoBuffer); } catch (_e) { logo = null; } } // embedded once, reused on every page
+        for (const c of cards) {
+          doc.addPage();
+          drawReportCardPage(doc, c.snapshot, school, logo);
+        }
+        doc.end();
+      } catch (e) {
+        reject(e);
+      }
+    });
+
+    const fileName = `${cls.name} ${RC_TERM_WORD[term]} Term ${session.name} report cards`
+      .replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '') + '.pdf';
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
+    res.setHeader('Content-Length', String(buffer.length));
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Report-Card-Count', String(cards.length));
+    res.end(buffer);
   } catch (err) {
     next(err);
   }
