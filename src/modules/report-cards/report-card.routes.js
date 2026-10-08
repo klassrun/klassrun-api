@@ -272,6 +272,7 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), requireActiveF
         update: {
           snapshot,
           generatedById: req.user.id,
+          pdfUrl: null, // rc-pdf-stale-v1: the old PDF shows the old snapshot
           // regenerating clears any stale PDF; locked cards are protected below
         },
         select: {
