@@ -566,4 +566,91 @@ router.post('/:id/lock', authenticate, authorize('SCHOOL_ADMIN'), requireActiveF
   }
 });
 
+// ── rc-lock-class-v1: lock / unlock a whole class, unlock one card ───────────
+// The class is the Enrollment set for (session, class) — the same cards Generate
+// and Print class work on. Locked cards are skipped by Generate, Print class and
+// Re-render PDF; unlocking lets them refresh from the latest data again.
+const RC_LOCK_TERM_WORD = { FIRST: 'First', SECOND: 'Second', THIRD: 'Third' }; // rc-lock-class-v1
+async function rcLockClassScope(req, res) {
+  const body = req.body || {};
+  const term = normTerm(body.term);
+  if (!term) { res.status(400).json({ error: { message: 'term must be FIRST, SECOND or THIRD', field: 'term' } }); return null; }
+  const classId = typeof body.classId === 'string' ? body.classId.trim() : '';
+  if (!classId) { res.status(400).json({ error: { message: 'classId is required', field: 'classId' } }); return null; }
+  const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
+  if (!sessionId) { res.status(400).json({ error: { message: 'sessionId is required', field: 'sessionId' } }); return null; }
+  const [cls, session] = await Promise.all([
+    prisma.class.findFirst({ where: { id: classId, schoolId: req.user.schoolId }, select: { id: true, name: true } }),
+    prisma.academicSession.findFirst({ where: { id: sessionId, schoolId: req.user.schoolId }, select: { id: true, name: true } }),
+  ]);
+  if (!cls) { res.status(404).json({ error: { message: 'Class not found', field: 'classId' } }); return null; }
+  if (!session) { res.status(404).json({ error: { message: 'Session not found', field: 'sessionId' } }); return null; }
+  const enrolled = await prisma.enrollment.findMany({
+    where: { schoolId: req.user.schoolId, sessionId: session.id, classId: cls.id },
+    select: { studentId: true },
+  });
+  const where = { schoolId: req.user.schoolId, sessionId: session.id, term, studentId: { in: enrolled.map((e) => e.studentId) } };
+  const total = enrolled.length === 0 ? 0 : await prisma.reportCard.count({ where });
+  if (total === 0) {
+    res.status(404).json({ error: {
+      message: `No report cards for ${cls.name}, ${RC_LOCK_TERM_WORD[term]} Term ${session.name} yet. Generate them first.`,
+      code: 'NO_REPORT_CARDS',
+    } });
+    return null;
+  }
+  return { cls, session, term, where, total };
+}
+
+router.post('/lock-class', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('RESULTS_REPORTCARDS'), /* rc-lock-class-v1 */ async (req, res, next) => {
+  try {
+    const scope = await rcLockClassScope(req, res);
+    if (!scope) return;
+    const r = await prisma.reportCard.updateMany({ where: { ...scope.where, lockedAt: null }, data: { lockedAt: new Date() } });
+    recordAcademicEvent('REPORT_CARD_LOCKED', {
+      schoolId: req.user.schoolId, actorId: req.user.id,
+      metadata: { bulk: true, classId: scope.cls.id, sessionId: scope.session.id, term: scope.term, count: r.count },
+    });
+    res.json({ changed: r.count, unchanged: scope.total - r.count, total: scope.total });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/unlock-class', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('RESULTS_REPORTCARDS'), /* rc-lock-class-v1 */ async (req, res, next) => {
+  try {
+    const scope = await rcLockClassScope(req, res);
+    if (!scope) return;
+    const r = await prisma.reportCard.updateMany({ where: { ...scope.where, lockedAt: { not: null } }, data: { lockedAt: null } });
+    recordAcademicEvent('REPORT_CARD_UNLOCKED', {
+      schoolId: req.user.schoolId, actorId: req.user.id,
+      metadata: { bulk: true, classId: scope.cls.id, sessionId: scope.session.id, term: scope.term, count: r.count },
+    });
+    res.json({ changed: r.count, unchanged: scope.total - r.count, total: scope.total });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/:id/unlock', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('RESULTS_REPORTCARDS'), /* rc-lock-class-v1 */ async (req, res, next) => {
+  try {
+    const card = await prisma.reportCard.findFirst({ where: { id: req.params.id, schoolId: req.user.schoolId } });
+    if (!card) return res.status(404).json({ error: { message: 'Report card not found' } });
+    if (!card.lockedAt) {
+      return res.json({ reportCard: { id: card.id, lockedAt: null, term: card.term, studentId: card.studentId, pdfUrl: card.pdfUrl } });
+    }
+    const updated = await prisma.reportCard.update({
+      where: { id: card.id },
+      data: { lockedAt: null },
+      select: { id: true, lockedAt: true, term: true, studentId: true, pdfUrl: true },
+    });
+    recordAcademicEvent('REPORT_CARD_UNLOCKED', {
+      schoolId: req.user.schoolId, actorId: req.user.id,
+      metadata: { reportCardId: updated.id },
+    });
+    res.json({ reportCard: updated });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;
