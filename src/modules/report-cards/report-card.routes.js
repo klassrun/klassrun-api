@@ -76,6 +76,23 @@ function commentsFromRecord(rec) {
   return { classTeacher: rec.classTeacher || null, principal: rec.principal || null };
 }
 
+// rc-card-refresh-v1: does a freshly built snapshot say the same thing as the saved one?
+// generatedAt is ignored (it always differs), undefined is dropped (JSON drops it too), and
+// object keys are sorted — Postgres jsonb reorders keys, so raw JSON text would never match.
+function rcCanon(v) {
+  if (Array.isArray(v)) return v.map(rcCanon);
+  if (v && typeof v === 'object') {
+    const out = {};
+    for (const k of Object.keys(v).sort()) if (k !== 'generatedAt' && v[k] !== undefined) out[k] = rcCanon(v[k]);
+    return out;
+  }
+  return v;
+}
+function rcSameSnapshot(saved, fresh) {
+  if (!saved || !fresh) return false;
+  return JSON.stringify(rcCanon(saved)) === JSON.stringify(rcCanon(fresh));
+}
+
 // ── POST /generate ──────────────────────────────────────────────────────────
 router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), requireActiveForWrites, requirePlan('RESULTS_REPORTCARDS'), /* gate-1-rc-gen */ async (req, res, next) => {
   try {
@@ -257,6 +274,12 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), requireActiveF
       // ops-2-generate-fold: never overwrite a finalized (locked) card
       const existingCard = existingByStudent[s.id]; // perf-6: map lookup, no query
       if (existingCard && existingCard.lockedAt) {
+        saved.push(existingCard);
+        continue;
+      }
+      // rc-card-refresh-v1: nothing on this card changed → leave it as it is, so its saved
+      // PDF survives. Re-generating a class only rewrites (and un-PDFs) cards that differ.
+      if (existingCard && rcSameSnapshot(existingCard.snapshot, snapshot)) {
         saved.push(existingCard);
         continue;
       }
@@ -466,7 +489,13 @@ router.get('/:id', authenticate, authorize('SCHOOL_ADMIN'), /* audit-reportcard-
       where: { id, schoolId: req.user.schoolId },
     });
     if (!card) return res.status(404).json({ error: { message: 'Report card not found' } });
-    res.json({ reportCard: card });
+    // rc-card-refresh-v1: the class this card belongs to (Enrollment for the card's session),
+    // so the card page can refresh the class before printing. null if no enrollment row.
+    const enr = await prisma.enrollment.findFirst({
+      where: { schoolId: req.user.schoolId, studentId: card.studentId, sessionId: card.sessionId },
+      select: { classId: true },
+    });
+    res.json({ reportCard: { ...card, classId: enr ? enr.classId : null } });
   } catch (err) {
     next(err);
   }
