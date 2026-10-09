@@ -132,7 +132,9 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), requireActiveF
     });
     const enrolledIds = enrolled.map((e) => e.studentId);
     const students = enrolledIds.length === 0 ? [] : await prisma.student.findMany({
-      where: { schoolId: req.user.schoolId, id: { in: enrolledIds }, archivedAt: null },
+      // rc-leavers-v1: students who have since left are included — they were in this class
+      // this session, and their record must stay traceable. Who gets ranked is decided below.
+      where: { schoolId: req.user.schoolId, id: { in: enrolledIds } },
       orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
     });
     if (students.length === 0) {
@@ -154,9 +156,26 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), requireActiveF
 
     // Group entries by student and by subject (for subject-position ranking).
     const byStudent = {};
-    const perSubject = {}; // subjectId → [{ id: studentId, value: total }]
     for (const e of entries) {
       (byStudent[e.studentId] = byStudent[e.studentId] || []).push(e);
+    }
+    // rc-leavers-v1: a student who has left (archivedAt) gets this term's card if they have at
+    // least one score. They are RANKED only if they finished the term — a score in every subject
+    // that was scored for this class this term (e.g. left over the holiday). A mid-term leaver is
+    // not ranked and not counted in classSize: one exam at 90 must not make them "1st", and
+    // their classmates' positions must not move. Current students are unaffected.
+    const scoredSubjects = new Set(entries.map((e) => e.subjectId));
+    const finishedTerm = (s) => {
+      if (scoredSubjects.size === 0) return false;
+      const mine = new Set((byStudent[s.id] || []).map((e) => e.subjectId));
+      for (const sid of scoredSubjects) if (!mine.has(sid)) return false;
+      return true;
+    };
+    const cardStudents = students.filter((s) => !s.archivedAt || (byStudent[s.id] || []).length > 0);
+    const rankedIds = new Set(cardStudents.filter((s) => !s.archivedAt || finishedTerm(s)).map((s) => s.id));
+    const perSubject = {}; // subjectId → [{ id: studentId, value: total }] — ranked students only
+    for (const e of entries) {
+      if (!rankedIds.has(e.studentId)) continue;
       (perSubject[e.subjectId] = perSubject[e.subjectId] || []).push({ id: e.studentId, value: e.total });
     }
     const subjectPos = {}; // subjectId → (studentId → position)
@@ -170,7 +189,7 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), requireActiveF
       const average = count > 0 ? Math.round((aggregate / count) * 100) / 100 : 0;
       return { id: s.id, aggregate, count, average };
     });
-    const overallPos = rankByDesc(aggregates.map((a) => ({ id: a.id, value: a.average })));
+    const overallPos = rankByDesc(aggregates.filter((a) => rankedIds.has(a.id)).map((a) => ({ id: a.id, value: a.average }))); // rc-leavers-v1
     const aggById = {};
     aggregates.forEach((a) => { aggById[a.id] = a; });
 
@@ -212,7 +231,7 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), requireActiveF
         code: 'SCORES_NEED_REVIEW',
       } });
     }
-    const classSize = students.length;
+    const classSize = rankedIds.size; // rc-leavers-v1: "of N" counts ranked students only
     const generatedAt = new Date();
 
     // perf-6: prefetch existing cards in ONE query (was 1 findUnique per student)
@@ -226,7 +245,7 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), requireActiveF
     // Build + persist one ReportCard per student (persist-before-respond).
     const saved = [];
     const upsertOps = []; // perf-6: batched in one transaction after the loop
-    for (const s of students) {
+    for (const s of cardStudents) { // rc-leavers-v1
       const es = (byStudent[s.id] || []).slice().sort((a, b) =>
         (subjectName[a.subjectId] || '').localeCompare(subjectName[b.subjectId] || ''));
 
@@ -254,7 +273,7 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), requireActiveF
           middleName: s.middleName || null,
           lastName: s.lastName,
           photoUrl: s.photoUrl || null,
-          class: cls.name,
+          class: rankedIds.has(s.id) ? cls.name : `${cls.name} (left)`, // rc-leavers-v1
         },
         session: session.name,
         grading: { components: termGrading.components }, // grading-config-v1
