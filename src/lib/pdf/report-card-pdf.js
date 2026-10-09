@@ -130,6 +130,21 @@ function boxStroke(doc, x, y, w, h, color) {
   doc.save().rect(x, y, w, h).lineWidth(0.6).strokeColor(color || BRAND.hair).stroke().restore();
 }
 
+// rc-grade-key-v1: the grade key printed under the subjects table, built from
+// grading.GRADE_BANDS so it can never disagree with the grades on the card.
+// It reads today's bands, not bands saved on the card — fine while bands are
+// global constants. If schools ever get their own bands, save them on the
+// snapshot (like snapshot.grading) and read them from there instead.
+function gradeKeyText() {
+  const raw = Array.isArray(grading.GRADE_BANDS) ? grading.GRADE_BANDS : [];
+  const bands = raw.filter((b) => b && b.grade != null && Number.isFinite(Number(b.min)))
+    .slice().sort((a, b) => Number(b.min) - Number(a.min));
+  if (bands.length === 0) return '';
+  const top = Number(grading.TOTAL_MAX) || 100;
+  const parts = bands.map((b, i) => `${b.grade} ${Number(b.min)}\u2013${i === 0 ? top : Number(bands[i - 1].min) - 1}${b.remark ? ' ' + b.remark : ''}`);
+  return 'Grade key:  ' + parts.join('  \u00b7  ');
+}
+
 // ── One card on the CURRENT page ─────────────────────────────────────────────
 function drawReportCardPage(doc, snapshot, school, logo) {
   const snap = snapshot || {};
@@ -141,6 +156,7 @@ function drawReportCardPage(doc, snapshot, school, logo) {
   const cw = right - left;
   const BOTTOM = H - 30;   // content ends here; the footer sits below it
   const GAP = 7;
+  const KEY_H = gradeKeyText() ? 11 : 0; // rc-grade-key-v1: counted in the one-page fit below
 
   const stu = snap.student || {};
   const sum = snap.summary || {};
@@ -269,7 +285,7 @@ function drawReportCardPage(doc, snapshot, school, logo) {
   const headH = headLines >= 3 ? 33 : headLines === 2 ? 27 : 20;
   // (column + header measurement moved up so the header height is known before fitting rows)
   const n = Math.max(subjects.length, 1);
-  const fixedBelow = () => GAP + summaryH + GAP + behH + GAP + commentBlockH() + (resumH ? GAP + resumH : 0);
+  const fixedBelow = () => KEY_H + GAP + summaryH + GAP + behH + GAP + commentBlockH() + (resumH ? GAP + resumH : 0); // rc-grade-key-v1
   let rowH = Math.min(16, (BOTTOM - tableTop - headH - fixedBelow()) / n);
   if (rowH < 11) { maxLines = 2; rowH = Math.min(16, (BOTTOM - tableTop - headH - fixedBelow()) / n); }
   rowH = Math.max(8, rowH);
@@ -312,6 +328,15 @@ function drawReportCardPage(doc, snapshot, school, logo) {
     });
   }
   boxStroke(doc, left, tableTop, cw, y - tableTop, '#d1d5db');
+  if (KEY_H) { // rc-grade-key-v1: one grey line, shrunk (7pt → 5.5pt) to fit the width
+    const keyText = gradeKeyText();
+    doc.font('Helvetica').fillColor(BRAND.grey);
+    let ks = 7;
+    while (ks > 5.5 && doc.fontSize(ks).widthOfString(keyText) > cw) ks -= 0.5;
+    doc.fontSize(ks);
+    cellText(doc, keyText, left, y + 3, cw, { pad: 0, blank: true });
+    y += KEY_H;
+  }
   y += GAP;
 
   // ── Term summary + attendance (one strip) ──
@@ -428,4 +453,5 @@ module.exports = {
   loadLogo,           // rc-onepage-v1
   BEHAVIOUR_ATTRS,
   _scoreCols: scoreCols, // grading-config-v1: _scoreCols for tests
+  _gradeKeyText: gradeKeyText, // rc-grade-key-v1: for tests
 };
