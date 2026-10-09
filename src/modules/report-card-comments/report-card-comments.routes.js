@@ -138,7 +138,9 @@ router.post('/generate', authenticate, authorize('SCHOOL_ADMIN'), requireActiveF
         term,
         summary: { subjectsCount: count, average },
         subjects,
-        attendance: att ? { schoolOpened: att.schoolOpened, present: att.present, absent: att.absent } : null,
+        // att-sanity-v1: attendance that doesn't add up is left out, so the AI can't comment on
+        // "poor attendance" for a child whose days were simply never entered.
+        attendance: att && att.present + att.absent === att.schoolOpened ? { schoolOpened: att.schoolOpened, present: att.present, absent: att.absent } : null,
         behaviour,
       });
     } catch (e) {

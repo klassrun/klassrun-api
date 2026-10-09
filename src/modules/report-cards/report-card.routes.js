@@ -69,6 +69,9 @@ function behaviourFromRecord(rec) {
 }
 function attendanceFromRecord(rec) {
   if (!rec) return { schoolOpened: null, present: null, absent: null };
+  // att-sanity-v1: never print attendance that doesn't add up (e.g. the old fill-down
+  // "opened 56, present 0, absent 0"): keep days opened, show "—" for the rest.
+  if (rec.present + rec.absent !== rec.schoolOpened) return { schoolOpened: rec.schoolOpened, present: null, absent: null };
   return { schoolOpened: rec.schoolOpened, present: rec.present, absent: rec.absent };
 }
 function commentsFromRecord(rec) {

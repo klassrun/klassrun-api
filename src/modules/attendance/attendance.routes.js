@@ -5,8 +5,11 @@
 //   GET  /api/attendance/grid?classId=&sessionId=&term=  roster + existing rows
 //   POST /api/attendance                                  upsert ONE student's row
 //
-// schoolOpened / present / absent per student per term. Validated:
-//   present <= schoolOpened, absent <= schoolOpened (not forced to sum — holidays).
+// schoolOpened / present / absent per student per term. att-sanity-v1:
+//   days opened and days present are REQUIRED — a blank is never turned into 0;
+//   days absent is worked out here as opened − present. Holidays are not days the
+//   school opened, so present + absent = opened always holds. A student who joined
+//   or left mid-term simply has a smaller days-opened on their own row.
 
 const router = require('express').Router();
 const { requirePlan, requireActiveForWrites } = require('../../lib/plan-gate'); // gate-1-require
@@ -155,14 +158,22 @@ router.post('/', authenticate, authorize('SCHOOL_ADMIN', 'TEACHER'), requireActi
     if (!own.ok) return res.status(own.status).json({ error: { message: own.message, field: own.field } });
 
 
+    // att-sanity-v1: a blank is "not entered", never 0 — fill-down + Save all used to store
+    // "opened 56, present 0, absent 0". Absent is derived, so the three can never disagree.
+    const isBlank = (v) => v === undefined || v === null || String(v).trim() === '';
+    if (isBlank(body.schoolOpened)) return res.status(400).json({ error: { message: 'Enter the days the school opened', field: 'schoolOpened' } });
+    if (isBlank(body.present)) return res.status(400).json({ error: { message: 'Enter the days present', field: 'present' } });
     const schoolOpened = toInt(body.schoolOpened);
     const present = toInt(body.present);
-    const absent = toInt(body.absent);
-    if (schoolOpened === null) return res.status(400).json({ error: { message: 'schoolOpened must be a whole number 0 or more', field: 'schoolOpened' } });
-    if (present === null) return res.status(400).json({ error: { message: 'present must be a whole number 0 or more', field: 'present' } });
-    if (absent === null) return res.status(400).json({ error: { message: 'absent must be a whole number 0 or more', field: 'absent' } });
-    if (present > schoolOpened) return res.status(400).json({ error: { message: 'present cannot exceed the days the school opened', field: 'present' } });
-    if (absent > schoolOpened) return res.status(400).json({ error: { message: 'absent cannot exceed the days the school opened', field: 'absent' } });
+    if (schoolOpened === null) return res.status(400).json({ error: { message: 'Days opened must be a whole number, 0 or more', field: 'schoolOpened' } });
+    if (present === null) return res.status(400).json({ error: { message: 'Days present must be a whole number, 0 or more', field: 'present' } });
+    if (present > schoolOpened) {
+      return res.status(400).json({ error: { message: `Days present (${present}) cannot be more than the days the school opened (${schoolOpened})`, field: 'present' } });
+    }
+    const absent = schoolOpened - present;
+    if (!isBlank(body.absent) && toInt(body.absent) !== absent) {
+      return res.status(400).json({ error: { message: `Days absent must be days opened minus days present: ${schoolOpened} − ${present} = ${absent}`, field: 'absent' } });
+    }
 
     const record = await prisma.attendanceRecord.upsert({
       where: { studentId_sessionId_term: { studentId: student.id, sessionId: sessRes.session.id, term } },
