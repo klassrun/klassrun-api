@@ -47,7 +47,7 @@ const PLAN_FEATURES = {
   AI_SCHEMES:                  { minTier: 'starter'  },
   AI_EXAMS:                    { minTier: 'standard' }, // tiermap-v1
   QUESTION_BANK:               { minTier: 'standard' }, // tiermap-v1
-  BRANDING:                    { minTier: 'standard' }, // tiermap-v1
+  BRANDING:                    { minTier: 'starter'  }, // tiermap-v1 · branding-all-v1: every plan (Oct 2026)
   NERDC_ALIGNMENT:             { minTier: 'starter'  }, // tiermap-v1
   SCHEME_UPLOAD:               { minTier: 'standard' },
   RESULTS_REPORTCARDS:         { minTier: 'starter'  }, // tiermap-v2
