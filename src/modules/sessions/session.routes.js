@@ -281,4 +281,36 @@ router.put('/:id/next-term-begins', authenticate, authorize('SCHOOL_ADMIN'), /* 
   }
 });
 
+// ── POST /api/sessions/:id/revert-term ─────────────────────────────────────
+// term-back-v1: undo an accidental Advance term — THIRD→SECOND, SECOND→FIRST, on the
+// current session only. currentTerm is only a pointer (which term pages open on and
+// new lesson notes are stamped with); every score, attendance row and report card is
+// saved with its own term, so moving back deletes and changes nothing.
+router.post('/:id/revert-term', authenticate, authorize('SCHOOL_ADMIN'), /* term-back-v1 */ async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const target = await prisma.academicSession.findFirst({
+      where: { id, schoolId: req.user.schoolId },
+    });
+    if (!target) return res.status(404).json({ error: { message: 'Session not found' } });
+    if (!target.isCurrent) return res.status(400).json({ error: { message: 'Term can only be moved back on the current session' } });
+    const fromTerm = target.currentTerm;
+    const idx = TERMS.indexOf(fromTerm);
+    if (idx <= 0) return res.status(400).json({ error: { message: 'Already at First Term — there is no earlier term to move back to' } });
+    const toTerm = TERMS[idx - 1];
+    const session = await prisma.academicSession.update({
+      where: { id },
+      data: { currentTerm: toTerm },
+    });
+    recordAcademicEvent('TERM_REVERTED', {
+      schoolId: req.user.schoolId,
+      actorId: req.user.id,
+      metadata: { sessionId: session.id, fromTerm, toTerm },
+    });
+    res.json({ session });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

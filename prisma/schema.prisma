@@ -404,6 +404,7 @@ enum AcademicEventType {
   SESSION_CREATED
   SESSION_MADE_CURRENT
   TERM_ADVANCED
+  TERM_REVERTED // term-back-v1
   // batch-2c-phase-2-class-archive
   CLASS_CREATED
   CLASS_UPDATED
